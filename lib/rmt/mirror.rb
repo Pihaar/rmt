@@ -1,6 +1,7 @@
 class RMT::Mirror
   RPM_FILE_NEEDLE = 'repodata/repomd.xml'.freeze
   DEB_FILE_NEEDLE = 'Release'.freeze
+  VALID_MIRROR_TYPES = %i[repomd debian].freeze
 
   attr_reader :logger, :mirroring_base_dir, :mirror_sources, :is_airgapped, :repository
 
@@ -19,7 +20,9 @@ class RMT::Mirror
                       mirror_sources: mirror_sources,
                       is_airgapped: is_airgapped }
 
+    @logger.debug("Detecting repository type for #{repository.friendly_id}")
     instance = repository_mirror_class.new(**configuration)
+    @logger.debug("Type detected: #{repository_type}, starting mirror for #{repository.friendly_id}")
     instance.mirror
   end
 
@@ -37,6 +40,25 @@ class RMT::Mirror
   end
 
   def repository_type
+    cached = repository.mirroring_type&.downcase&.to_sym
+    if cached.present? && !VALID_MIRROR_TYPES.include?(cached)
+      sanitized_type = repository.mirroring_type.to_s.gsub(/[^[:print:]]/, '?')[0..15]
+      @logger.warn("Invalid cached mirroring_type '#{sanitized_type}' for repository #{repository.friendly_id}, re-detecting")
+    end
+    return cached if VALID_MIRROR_TYPES.include?(cached)
+
+    detected = detect_repository_type
+    if detected && repository.persisted?
+      begin
+        repository.update!(mirroring_type: detected.to_s)
+      rescue ActiveRecord::RecordInvalid => e
+        @logger.warn("Failed to cache mirroring_type for repository #{repository.friendly_id}: #{e.message}")
+      end
+    end
+    detected
+  end
+
+  def detect_repository_type
     # We search repomd structure first since it is more common
     # Debian is less common
 

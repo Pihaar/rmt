@@ -270,6 +270,75 @@ The `mirroring` section lets you adjust mirroring behavior.
   * `mirroring.redirect_repo_hosts`:
     List of hostnames from which repos will not get mirrored, but clients get redirected there.
 
+**Performance tuning**
+
+The following settings are available to optimize mirroring performance.
+All default to current behavior — no changes are needed for existing installations.
+
+  * `mirroring.download_concurrency`:
+    Number of concurrent package downloads per repository (1-32, default: 4).
+    Higher values speed up mirroring on fast networks. Values above 16 may
+    trigger upstream CDN rate-limiting.
+  * `mirroring.head_concurrency`:
+    Number of concurrent HEAD requests for cache validation (1-32, default: 4).
+    HEAD requests are lightweight and can safely use higher concurrency.
+  * `mirroring.retry_count`:
+    Maximum retry attempts for failed downloads (0-20, default: 4).
+    Set to 0 for no retries (single attempt only).
+  * `mirroring.retry_delay`:
+    Base delay in seconds between retries (1-120, default: 2).
+  * `mirroring.exponential_backoff`:
+    When set to `true`, retry delays increase exponentially (delay * 2^attempt)
+    with random jitter, capped at 300 seconds. Minimum jitter delay is 1 second
+    regardless of `retry_delay` setting. Default: `false` (flat delay).
+    Accepted values: `true`, `false`, `yes`, `no`, `1`, `0`.
+  * `mirroring.revalidate_repodata`:
+    When set to `false`, skips re-parsing unchanged metadata files. Can
+    significantly reduce mirror run times for large repositories (>50 MB
+    compressed primary.xml). Default: `true`.
+  * `mirroring.full_revalidation_day`:
+    Day(s) of the week to force full revalidation, even when `revalidate_repodata`
+    is set to `false`. Accepts a single value or a list. Values can be day names
+    (`saturday`, `sunday`, etc.) or numbers (0=Sunday, 6=Saturday). When set,
+    mirror runs on matching days will re-parse all metadata and re-validate all
+    packages, providing periodic integrity verification while keeping other days
+    fast. No default (disabled). Examples:
+
+        full_revalidation_day: saturday
+
+        full_revalidation_day:
+          - saturday
+          - wednesday
+
+Recommended configurations:
+
+  Small deployment (< 20 repositories):
+    Use defaults. No tuning needed.
+
+  Large deployment (100+ repositories, dedicated network):
+
+    mirroring:
+      download_concurrency: 10
+      head_concurrency: 16
+      exponential_backoff: true
+      revalidate_repodata: false
+
+Notes:
+
+  - HTTP 429 (rate-limiting) responses are handled automatically: RMT respects
+    the integer `Retry-After` header and does not count rate-limited requests
+    against the retry limit. HTTP-date format `Retry-After` is not supported
+    and falls back to the computed delay.
+  - Retry delays in the HEAD validation path block concurrent HEAD requests.
+    The download path uses a non-blocking queue for retries.
+  - High concurrency values may trigger CDN rate-limiting or EDR/IDS alerts.
+    Coordinate concurrency increases with your network security team.
+  - Ensure journald is configured to forward to your organization's SIEM
+    for operational visibility, especially with higher concurrency settings.
+  - Back up the database before running the `AddMirroringTypeToRepositories`
+    migration. The migration is online-safe (adding a nullable column) but
+    standard backup practice is recommended.
+
 **HTTP client settings**
 
 The `http_client` section defines RMT's global HTTP connection settings.

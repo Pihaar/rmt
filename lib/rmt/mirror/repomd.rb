@@ -36,7 +36,7 @@ class RMT::Mirror::Repomd < RMT::Mirror::Base
         else
           FileUtils.cp(ref.cache_path, File.join(temp(:metadata), ref.relative_path))
         end
-        (RMT::Config.revalidate_repodata? || metadata_updated?(ref)) ? ref : nil
+        (RMT::Config.revalidate_repodata_pinned? || metadata_updated?(ref)) ? ref : nil
       end.compact
 
     download_enqueued
@@ -55,9 +55,11 @@ class RMT::Mirror::Repomd < RMT::Mirror::Base
                                                      base_url: repository_url)
     end
 
-    @logger.debug _('Mirroring new packages')
-    packages.each do |package|
-      enqueue package if need_to_download?(package)
+    with_dedup_cache(packages) do
+      @logger.debug _('Mirroring new packages')
+      packages.each do |package|
+        enqueue package if need_to_download?(package)
+      end
     end
 
     failed = download_enqueued(continue_on_error: true)

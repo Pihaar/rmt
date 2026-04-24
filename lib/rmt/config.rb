@@ -43,9 +43,54 @@ module RMT::Config
     # This method checks whether to re-validate metadata content and packages
     # when the metadata did not change (default=true)
     def revalidate_repodata?
+      return true if full_revalidation_day_today?
       return true if Settings.try(:mirroring).try(:revalidate_repodata).nil?
 
       ActiveModel::Type::Boolean.new.cast(Settings.mirroring.revalidate_repodata)
+    end
+
+    # Pin the revalidation decision at mirror start to avoid mid-run changes at midnight.
+    # Call pin_revalidation! at the beginning of a mirror run, unpin_revalidation! at the end.
+    def pin_revalidation!
+      @pinned_revalidate_repodata = revalidate_repodata?
+    end
+
+    def unpin_revalidation!
+      @pinned_revalidate_repodata = nil
+    end
+
+    def revalidate_repodata_pinned?
+      return @pinned_revalidate_repodata unless @pinned_revalidate_repodata.nil?
+      revalidate_repodata?
+    end
+
+    # Days of week for forced full revalidation.
+    # Accepts a single value or an array: "saturday", 6, or ["saturday", "wednesday"]
+    def full_revalidation_day_today?
+      raw = Settings.try(:mirroring).try(:full_revalidation_day)
+      return false if raw.nil?
+
+      day_names = %w[sunday monday tuesday wednesday thursday friday saturday]
+      today = Time.now.wday
+
+      # Config gem wraps YAML arrays as Config::Options (hash-like: {"0"=>"sat", "1"=>"wed"}).
+      # Extract values for hash-like objects, wrap scalars in Array.
+      entries = if raw.is_a?(Array)
+        raw
+      elsif raw.respond_to?(:values)
+        raw.values
+      else
+        [raw]
+      end
+
+      entries.any? do |entry|
+        target = if entry.is_a?(Integer) || entry.to_s.match?(/\A\d+\z/)
+          entry.to_i
+        else
+          day_names.index(entry.to_s.downcase)
+        end
+        target && target >= 0 && target <= 6 && today == target
+      end
     end
 
     def mirror_src_files?
@@ -60,6 +105,43 @@ module RMT::Config
     def redirect_repo_hosts
       hosts = Settings&.mirroring&.redirect_repo_hosts
       hosts.is_a?(Array) && hosts.present? && hosts.all?(String) ? hosts : nil
+    end
+
+    def download_concurrency
+      raw = Settings.try(:mirroring).try(:download_concurrency)
+      val = validate_int_range(raw, max: 32)
+      log_config_warning('download_concurrency', raw, 4, 1, 32) if val.nil? && !raw.nil?
+      val || 4
+    end
+
+    def head_concurrency
+      raw = Settings.try(:mirroring).try(:head_concurrency)
+      val = validate_int_range(raw, max: 32)
+      log_config_warning('head_concurrency', raw, 4, 1, 32) if val.nil? && !raw.nil?
+      val || 4
+    end
+
+    def retry_count
+      raw = Settings.try(:mirroring).try(:retry_count)
+      val = validate_int_range(raw, min: 0, max: 20)
+      log_config_warning('retry_count', raw, 4, 0, 20) if val.nil? && !raw.nil?
+      val || 4
+    end
+
+    def retry_delay
+      raw = Settings.try(:mirroring).try(:retry_delay)
+      val = validate_int_range(raw, max: 120)
+      log_config_warning('retry_delay', raw, 2, 1, 120) if val.nil? && !raw.nil?
+      val || 2
+    end
+
+    def exponential_backoff?
+      raw = Settings.try(:mirroring).try(:exponential_backoff)
+      val = ActiveModel::Type::Boolean.new.cast(raw)
+      if val.nil? && !raw.nil?
+        Rails.logger.warn("mirroring.exponential_backoff=#{raw} is not a valid boolean, using default false")
+      end
+      val || false
     end
 
     WebServerConfig = Struct.new(
@@ -99,6 +181,20 @@ module RMT::Config
       return nil if converted_value.nil? || converted_value < 1
 
       converted_value
+    end
+
+    def validate_int_range(value, min: 1, max: nil)
+      converted = Integer(value) rescue nil
+      return nil if converted.nil?
+      return nil if converted < min
+      return nil if max && converted > max
+      converted
+    end
+
+    def log_config_warning(key, value, default, min, max)
+      Rails.logger.warn(
+        "mirroring.#{key}=#{value} is outside valid range (#{min}..#{max}), using default #{default}"
+      )
     end
   end
 end

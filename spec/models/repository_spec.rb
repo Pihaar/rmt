@@ -262,4 +262,26 @@ RSpec.describe Repository, type: :model do
       end
     end
   end
+
+  describe 'mirroring_type' do
+    it { is_expected.to allow_value(nil).for(:mirroring_type) }
+    it { is_expected.to allow_value('repomd').for(:mirroring_type) }
+    it { is_expected.to allow_value('debian').for(:mirroring_type) }
+    it { is_expected.not_to allow_value('bogus').for(:mirroring_type) }
+    it { is_expected.not_to allow_value('').for(:mirroring_type) }
+
+    describe 'cache invalidation on external_url change' do
+      let(:repo) { create(:repository, mirroring_type: 'repomd') }
+
+      it 'clears mirroring_type when external_url changes' do
+        repo.update!(external_url: 'https://new.example.com/repo/')
+        expect(repo.reload.mirroring_type).to be_nil
+      end
+
+      it 'preserves mirroring_type when other attributes change' do
+        repo.update!(name: 'New Name')
+        expect(repo.reload.mirroring_type).to eq('repomd')
+      end
+    end
+  end
 end

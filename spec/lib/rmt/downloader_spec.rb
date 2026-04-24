@@ -435,13 +435,29 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'cleans up the queue of downloads' do
+        # Use a downloader with concurrency 1 to test queue cleanup deterministically
+        low_concurrency_dl = described_class.new(
+          logger: RMT::Logger.new('/dev/null'),
+          track_files: track_files, concurrency: 1
+        )
+
+        files.each do |file|
+          stub_request(:get, "http://example.com/#{file}").with(headers: headers)
+            .to_return(
+              status: 404,
+              body: lambda do |_|
+                low_concurrency_dl.instance_variable_get(:@hydra)&.multi&.easy_handles&.<<(Ethon::Easy.new(url: 'www.example.com'))
+                'dummy'
+              end,
+              headers: {}
+            )
+        end
+
         expect do
-          downloader.concurrency = 1
-          downloader.download_multi(queue.dup, ignore_errors: false)
+          low_concurrency_dl.download_multi(queue.dup, ignore_errors: false)
         end.to raise_error("http://example.com/package1 - request failed with HTTP status code 404, return code ''")
 
-        expect(downloader.instance_variable_get(:@hydra).multi.easy_handles).to eq([])
-        expect(downloader.instance_variable_get(:@queue)).to eq([])
+        expect(low_concurrency_dl.instance_variable_get(:@queue)).to eq([])
       end
     end
 
@@ -488,6 +504,167 @@ RSpec.describe RMT::Downloader do
           expect(failed_downloads).to match_array(queue.map(&:local_path))
         end
       end
+    end
+  end
+
+  describe RMT::Downloader::QueueItem do
+    describe '#ready?' do
+      it 'returns true when retry_after is nil (fresh item)' do
+        item = described_class.new(file_reference: double)
+        expect(item.ready?).to be true
+      end
+
+      it 'returns true when retry_after is in the past' do
+        item = described_class.new(file_reference: double, retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1)
+        expect(item.ready?).to be true
+      end
+
+      it 'returns false when retry_after is in the future' do
+        item = described_class.new(file_reference: double, retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 100)
+        expect(item.ready?).to be false
+      end
+
+      it 'returns true when retry_after equals current time' do
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        allow(Process).to receive(:clock_gettime).and_return(now)
+        item = described_class.new(file_reference: double, retry_after: now)
+        expect(item.ready?).to be true
+      end
+    end
+  end
+
+  describe '#compute_delay' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 2, max_retries: 4, exponential_backoff: false) }
+
+    context 'when exponential_backoff is false' do
+      it 'returns flat retry_delay regardless of remaining retries' do
+        expect(dl.send(:compute_delay, 4)).to eq(2)
+        expect(dl.send(:compute_delay, 1)).to eq(2)
+      end
+    end
+
+    context 'when exponential_backoff is true' do
+      let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 2, max_retries: 4, exponential_backoff: true) }
+
+      it 'returns increasing delays with jitter' do
+        delays = (1..4).map { |remaining| dl.send(:compute_delay, remaining) }
+        delays.each { |d| expect(d).to be >= 1 }
+        expect(delays.last).to be <= RMT::Downloader::MAX_BACKOFF
+      end
+
+      it 'caps at MAX_BACKOFF' do
+        big_dl = described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 120, max_retries: 20, exponential_backoff: true)
+        delay = big_dl.send(:compute_delay, 1)
+        expect(delay).to be <= RMT::Downloader::MAX_BACKOFF
+      end
+    end
+  end
+
+  describe '#parse_retry_after' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+
+    it 'returns nil for nil response' do
+      expect(dl.send(:parse_retry_after, nil)).to be_nil
+    end
+
+    it 'parses integer Retry-After header' do
+      response = double(headers: { 'Retry-After' => '10' })
+      expect(dl.send(:parse_retry_after, response)).to eq(10)
+    end
+
+    it 'returns nil for Retry-After exceeding MAX_BACKOFF' do
+      response = double(headers: { 'Retry-After' => '600' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for zero Retry-After' do
+      response = double(headers: { 'Retry-After' => '0' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for negative Retry-After' do
+      response = double(headers: { 'Retry-After' => '-5' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for non-integer Retry-After (HTTP-date)' do
+      response = double(headers: { 'Retry-After' => 'Fri, 24 Apr 2026 12:00:00 GMT' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil when headers are nil' do
+      response = double(headers: nil)
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+  end
+
+  describe '#valid_cached_file? Content-Length fallback' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:file) do
+      double(
+        remote_path: URI('http://example.com/test.rpm'),
+        cache_path: '/tmp/test.rpm',
+        cache_timestamp: Time.utc(2026, 1, 1)
+      )
+    end
+
+    context 'when Last-Modified is present' do
+      it 'uses Last-Modified comparison' do
+        response = double(code: 200, return_code: :ok, headers: { 'Last-Modified' => 'Thu, 01 Jan 2026 00:00:00 GMT' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be true
+      end
+    end
+
+    context 'when Last-Modified is absent but Content-Length matches' do
+      it 'returns true' do
+        allow(File).to receive(:exist?).with('/tmp/test.rpm').and_return(true)
+        allow(File).to receive(:size).with('/tmp/test.rpm').and_return(1234)
+        response = double(code: 200, return_code: :ok, headers: { 'Content-Length' => '1234' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be true
+      end
+    end
+
+    context 'when Last-Modified absent and Content-Length differs' do
+      it 'returns false' do
+        allow(File).to receive(:exist?).with('/tmp/test.rpm').and_return(true)
+        allow(File).to receive(:size).with('/tmp/test.rpm').and_return(999)
+        response = double(code: 200, return_code: :ok, headers: { 'Content-Length' => '1234' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+
+    context 'when neither header is present' do
+      it 'returns false' do
+        response = double(code: 200, return_code: :ok, headers: {})
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+
+    context 'when Content-Length is non-numeric' do
+      it 'returns false' do
+        response = double(code: 200, return_code: :ok, headers: { 'Content-Length' => 'abc' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+  end
+
+  describe 'constructor kwargs' do
+    it 'accepts concurrency as constructor argument' do
+      dl = described_class.new(logger: RMT::Logger.new('/dev/null'), concurrency: 8)
+      expect(dl.concurrency).to eq(8)
+    end
+
+    it 'uses config defaults when no arguments provided' do
+      dl = described_class.new(logger: RMT::Logger.new('/dev/null'))
+      expect(dl.concurrency).to eq(RMT::Config.download_concurrency)
+      expect(dl.head_concurrency).to eq(RMT::Config.head_concurrency)
+      expect(dl.max_retries).to eq(RMT::Config.retry_count)
+      expect(dl.retry_delay).to eq(RMT::Config.retry_delay)
+    end
+
+    it 'does not allow post-construction mutation of concurrency' do
+      dl = described_class.new(logger: RMT::Logger.new('/dev/null'))
+      expect { dl.concurrency = 8 }.to raise_error(NoMethodError)
     end
   end
 end

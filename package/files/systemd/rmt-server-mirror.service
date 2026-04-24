@@ -16,6 +16,8 @@ ProtectControlGroups=true
 RestrictRealtime=true
 Type=simple
 Restart=no
+LimitNOFILE=65536
+TimeoutStopSec=3600
 Environment="LOG_TO_JOURNALD=1" "LANG=en"
 ExecStart=/usr/share/rmt/bin/rmt-cli mirror
 

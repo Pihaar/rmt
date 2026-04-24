@@ -1,5 +1,7 @@
 class RepositoryService
 
+  PROTECTED_ATTRS = %w[id mirroring_type].freeze
+
   class RepositoryNotFound < RuntimeError
   end
 
@@ -16,7 +18,7 @@ class RepositoryService
                  end
 
     repository.attributes = attributes.select do |k, _|
-      repository.attributes.keys.member?(k.to_s) && k.to_s != 'id'
+      repository.attributes.keys.member?(k.to_s) && !PROTECTED_ATTRS.include?(k.to_s)
     end
 
     if custom
