@@ -31,6 +31,26 @@ RSpec.describe RMT::HttpRequest do
 
     its([:low_speed_limit]) { is_expected.to eq(1337) }
     its([:low_speed_time]) { is_expected.to eq(42) }
+
+    context 'when method is :head' do
+      let(:request) { described_class.new('http://example.com', method: :head) }
+
+      it 'sets shorter timeouts and removes low_speed settings' do
+        expect(request.options[:connecttimeout]).to eq(5)
+        expect(request.options[:timeout]).to eq(30)
+        expect(request.options[:low_speed_limit]).to be_nil
+        expect(request.options[:low_speed_time]).to be_nil
+      end
+    end
+
+    context 'when method is :get (default)' do
+      it 'keeps low_speed settings and no connect timeout' do
+        expect(request.options[:connecttimeout]).to be_nil
+        expect(request.options[:timeout]).to be_nil
+        expect(request.options[:low_speed_limit]).to eq(1337)
+        expect(request.options[:low_speed_time]).to eq(42)
+      end
+    end
   end
 
   describe 'when request is too slow' do

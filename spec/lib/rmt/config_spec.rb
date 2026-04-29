@@ -432,43 +432,43 @@ RSpec.describe RMT::Config do
     end
 
     it 'returns true when today matches configured day name' do
-      today_name = %w[sunday monday tuesday wednesday thursday friday saturday][Time.now.wday]
+      today_name = %w[sunday monday tuesday wednesday thursday friday saturday][Time.now.utc.wday]
       Settings['mirroring'].full_revalidation_day = today_name
       expect(described_class.full_revalidation_day_today?).to be true
     end
 
     it 'returns true when today matches configured day number' do
-      Settings['mirroring'].full_revalidation_day = Time.now.wday
+      Settings['mirroring'].full_revalidation_day = Time.now.utc.wday
       expect(described_class.full_revalidation_day_today?).to be true
     end
 
     it 'is case-insensitive for day names' do
-      today_name = %w[Sunday Monday Tuesday Wednesday Thursday Friday Saturday][Time.now.wday]
+      today_name = %w[Sunday Monday Tuesday Wednesday Thursday Friday Saturday][Time.now.utc.wday]
       Settings['mirroring'].full_revalidation_day = today_name
       expect(described_class.full_revalidation_day_today?).to be true
     end
 
     it 'returns false for non-matching day' do
-      tomorrow = (Time.now.wday + 1) % 7
+      tomorrow = (Time.now.utc.wday + 1) % 7
       Settings['mirroring'].full_revalidation_day = tomorrow
       expect(described_class.full_revalidation_day_today?).to be false
     end
 
     it 'accepts an array of day names' do
-      today_name = %w[sunday monday tuesday wednesday thursday friday saturday][Time.now.wday]
+      today_name = %w[sunday monday tuesday wednesday thursday friday saturday][Time.now.utc.wday]
       Settings['mirroring'].full_revalidation_day = ['monday', today_name, 'friday']
       expect(described_class.full_revalidation_day_today?).to be true
     end
 
     it 'returns false when array contains no matching day' do
-      tomorrow = (Time.now.wday + 1) % 7
-      day_after = (Time.now.wday + 2) % 7
+      tomorrow = (Time.now.utc.wday + 1) % 7
+      day_after = (Time.now.utc.wday + 2) % 7
       Settings['mirroring'].full_revalidation_day = [tomorrow, day_after]
       expect(described_class.full_revalidation_day_today?).to be false
     end
 
     it 'accepts mixed array of names and numbers' do
-      today_num = Time.now.wday
+      today_num = Time.now.utc.wday
       Settings['mirroring'].full_revalidation_day = ['monday', today_num]
       expect(described_class.full_revalidation_day_today?).to be true
     end
@@ -482,7 +482,7 @@ RSpec.describe RMT::Config do
 
     it 'forces revalidate_repodata? to true on matching day' do
       Settings['mirroring'].revalidate_repodata = false
-      Settings['mirroring'].full_revalidation_day = Time.now.wday
+      Settings['mirroring'].full_revalidation_day = Time.now.utc.wday
       expect(described_class.revalidate_repodata?).to be true
     end
   end

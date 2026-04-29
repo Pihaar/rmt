@@ -189,7 +189,7 @@ RSpec.describe RMT::Mirror do
     end
 
     context 'when mirroring_type has an invalid cached value' do
-      let(:repository) { create :repository, external_url: url, mirroring_type: 'bogus' }
+      let(:repository) { create :repository, external_url: url }
 
       before do
         # Bypass validation to set invalid value
@@ -211,6 +211,16 @@ RSpec.describe RMT::Mirror do
         stub_request(:head, "#{url}Release").to_return(status: 404)
         expect(mirror.repository_type).to be_nil
         expect(repository.reload.mirroring_type).to be_nil
+      end
+    end
+
+    context 'when update! fails with validation error' do
+      let(:repository) { create :repository, external_url: url, mirroring_type: nil }
+
+      it 'logs warning and continues without crashing' do
+        stub_request(:head, repomd_url).to_return(status: 200)
+        allow(repository).to receive(:update!).and_raise(ActiveRecord::RecordInvalid.new(repository))
+        expect(mirror.repository_type).to eq(:repomd)
       end
     end
   end
