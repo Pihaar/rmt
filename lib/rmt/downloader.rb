@@ -63,25 +63,30 @@ class RMT::Downloader
 
     loop do
       @hydra.run
-      # Re-seed after hydra.run — items may have been queued by ensure blocks
+      # Re-seed after hydra.run - items may have been queued by ensure blocks
       @concurrency.times { process_queue(failed_downloads) }
       @hydra.run unless @queue.empty?
 
       break if @queue.empty?
-      deferred = @queue.select { |item| !item.ready? }
-      next if deferred.empty?
 
-      earliest = deferred.map(&:retry_after).min
-      wait = [earliest - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0.1].max
-      @logger.debug("All download slots idle, waiting %.1fs for %d deferred items" % [wait, deferred.size])
-      sleep(wait)
-      @concurrency.times { process_queue(failed_downloads) }
+      wait_for_deferred(failed_downloads)
     end
     @hydra = nil
     failed_downloads
   end
 
   protected
+
+  def wait_for_deferred(failed_downloads)
+    deferred = @queue.reject(&:ready?)
+    return if deferred.empty?
+
+    earliest = deferred.map(&:retry_after).min
+    wait = [earliest - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0.1].max
+    @logger.debug("All download slots idle, waiting #{format('%.1f', wait)}s for #{deferred.size} deferred items")
+    sleep(wait)
+    @concurrency.times { process_queue(failed_downloads) }
+  end
 
   # Creates a fiber that wraps RMT::FiberRequest and runs it, returning the RMT::FiberRequest object.
   # @param [RMT::Mirror::FileReference] file_reference with all file metadata attributes and paths (remote, local, cache)
@@ -106,8 +111,8 @@ class RMT::Downloader
             nil
           else
             # empty queue when raising, so the downloader can get re-used
-            dropped = @queue.count { |i| i.retry_after }
-            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0
+            dropped = @queue.count(&:retry_after)
+            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0 # rubocop:disable Metrics/BlockNesting
             @queue = []
             @hydra.multi.easy_handles.to_a.each do |handle|
               @hydra.multi.delete(handle)
@@ -155,20 +160,20 @@ class RMT::Downloader
       if failed_downloads
         failed_downloads << file_reference
       else
-        dropped = @queue.count { |i| i.retry_after }
+        dropped = @queue.count(&:retry_after)
         @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0
         @queue = []
         @hydra.multi.easy_handles.to_a.each { |handle| @hydra.multi.delete(handle) }
         raise exception
       end
     else
-      attempt_429 = @rate_limit_retries[file_key]
-      computed_429_delay = @retry_delay * (2**attempt_429)
+      rate_limit_attempt = @rate_limit_retries[file_key]
+      computed_429_delay = @retry_delay * (2**rate_limit_attempt)
       retry_after = parse_retry_after(exception.try(:response)) || [computed_429_delay, MIN_RATE_LIMIT_DELAY].max
       retry_after = [retry_after, MAX_BACKOFF].min
       @logger.warn(_('Rate limited downloading %{file_reference}. Waiting %{seconds} seconds (attempt %{attempt}/%{max})') % {
         file_reference: file_reference.remote_path, seconds: retry_after,
-        attempt: attempt_429, max: MAX_429_RETRIES
+        attempt: rate_limit_attempt, max: MAX_429_RETRIES
       })
       enqueue_retry(file_reference, failed_downloads: failed_downloads, retries: retries, delay: retry_after)
     end
@@ -177,12 +182,12 @@ class RMT::Downloader
   def enqueue_retry(file_reference, failed_downloads:, retries:, delay:)
     deferred_count = @queue.count { |i| !i.ready? }
     if deferred_count >= MAX_DEFERRED_QUEUE_SIZE
-      @logger.warn("Deferred retry queue full (%d items), cannot retry %s" % [deferred_count, file_reference.remote_path])
+      @logger.warn(format('Deferred retry queue full (%{count} items), cannot retry %{file}', count: deferred_count, file: file_reference.remote_path))
       if failed_downloads
         failed_downloads << file_reference
       else
         # Clean up before raising, same pattern as fatal error path
-        dropped = @queue.count { |i| i.retry_after }
+        dropped = @queue.count(&:retry_after)
         @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0
         @queue = []
         @hydra.multi.easy_handles.to_a.each { |handle| @hydra.multi.delete(handle) }
@@ -191,12 +196,14 @@ class RMT::Downloader
         )
       end
     else
-      @queue.push(QueueItem.new(
-        file_reference: file_reference,
-        failed_downloads: failed_downloads,
-        retries: retries,
-        retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) + delay
-      ))
+      @queue.push(
+        QueueItem.new(
+          file_reference: file_reference,
+          failed_downloads: failed_downloads,
+          retries: retries,
+          retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) + delay
+        )
+      )
     end
   end
 
@@ -219,7 +226,7 @@ class RMT::Downloader
 
     seconds = Integer(header) rescue nil
     unless seconds
-      # HTTP-date format (RFC 7231) not supported — falls back to computed delay
+      # HTTP-date format (RFC 7231) not supported -- falls back to computed delay
       sanitized = header.to_s.gsub(/[^[:print:]]/, '?')[0..30]
       @logger.debug("Retry-After header '#{sanitized}' is not an integer, ignoring")
       return nil
@@ -245,7 +252,7 @@ class RMT::Downloader
     request.receive_body
   end
 
-  def try_copying_from_cache(files, ignore_errors: false)
+  def try_copying_from_cache(files, ignore_errors: false) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     # We need to verify if the cached copy is still relevant
     # Create a HTTP/HTTPS HEAD request if possible, return nil if not
     cache_requests = files.map { |file| [file, cache_head_request(file)] }.to_h
@@ -330,11 +337,11 @@ class RMT::Downloader
     # This avoids re-downloading unchanged files from servers without Last-Modified.
     content_length = response.headers['Content-Length']
     if content_length && content_length.to_s.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
-      @logger.debug("  (no Last-Modified header, using Content-Length comparison)")
+      @logger.debug('  (no Last-Modified header, using Content-Length comparison)')
       return File.size(file.cache_path) == content_length.to_i
     end
 
-    @logger.debug("  (no Last-Modified or Content-Length header, treating cache as stale)")
+    @logger.debug('  (no Last-Modified or Content-Length header, treating cache as stale)')
     false
   end
 
@@ -344,7 +351,7 @@ class RMT::Downloader
       FileUtils.cp(file.cache_path, file.local_path, preserve: true)
     end
     @logger.info("→ #{File.basename(file.local_path)}")
-    @logger.debug("  (cached file is current)")
+    @logger.debug('  (cached file is current)')
   end
 
   def finalize_download(request, file)

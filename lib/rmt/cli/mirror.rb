@@ -118,16 +118,19 @@ class RMT::CLI::Mirror < RMT::CLI::Base
     RMT::Mirror::SumaProductTree.new(logger: logger, mirroring_base_dir: RMT::DEFAULT_MIRROR_DIR)
   end
 
-  # Note: only log non-sensitive config keys here.
+  # NOTE: only log non-sensitive config keys here.
   def log_mirror_config
-    logger.info("Mirror config: download_concurrency=%{dc}, head_concurrency=%{hc}, " \
-                "retry_count=%{rc}, retry_delay=%{rd}, exponential_backoff=%{eb}, " \
-                "revalidate_repodata=%{rv}" % {
-      dc: RMT::Config.download_concurrency, hc: RMT::Config.head_concurrency,
-      rc: RMT::Config.retry_count, rd: RMT::Config.retry_delay,
-      eb: RMT::Config.exponential_backoff?,
-      rv: RMT::Config.revalidate_repodata_pinned?
-    })
+    logger.info(
+      format(
+        'Mirror config: download_concurrency=%<dc>s, head_concurrency=%<hc>s, ' \
+          'retry_count=%<rc>s, retry_delay=%<rd>s, exponential_backoff=%<eb>s, ' \
+          'revalidate_repodata=%<rv>s',
+        dc: RMT::Config.download_concurrency, hc: RMT::Config.head_concurrency,
+        rc: RMT::Config.retry_count, rd: RMT::Config.retry_delay,
+        eb: RMT::Config.exponential_backoff?,
+        rv: RMT::Config.revalidate_repodata_pinned?
+      )
+    )
   end
 
   def errors
@@ -171,7 +174,7 @@ class RMT::CLI::Mirror < RMT::CLI::Base
     true
   end
 
-  def mirror_repositories!(repos)
+  def mirror_repositories!(repos) # rubocop:disable Metrics/PerceivedComplexity
     downloaded_files_count = 0
     downloaded_files_size = 0
 
@@ -204,7 +207,7 @@ class RMT::CLI::Mirror < RMT::CLI::Base
         logger.info(_("Completed '%{repo_name}' (ID: %{repo_id}) in %{duration}s, %{files_count} %{file_word}") % {
           repo_name: repo.name, repo_id: repo.friendly_id, duration: duration, files_count: files_count, file_word: file_word
         })
-      else
+      elsif files_count
         logger.info(_("Completed '%{repo_name}' (ID: %{repo_id}) in %{duration}s, up to date") % {
           repo_name: repo.name, repo_id: repo.friendly_id, duration: duration
         })

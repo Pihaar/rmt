@@ -18,7 +18,7 @@ class RepositoryService
                  end
 
     repository.attributes = attributes.select do |k, _|
-      repository.attributes.keys.member?(k.to_s) && !PROTECTED_ATTRS.include?(k.to_s)
+      repository.attributes.keys.member?(k.to_s) && PROTECTED_ATTRS.exclude?(k.to_s)
     end
 
     if custom

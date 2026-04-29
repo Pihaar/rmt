@@ -22,10 +22,10 @@ module RMT::FileValidator
     # @dedup_cache is set by with_dedup_cache in base.rb (cross-module instance variable).
     # When nil, falls back to per-file DB query (Debian mirror, license mirror, etc.)
     files = if @dedup_cache
-      (@dedup_cache[[checksum, checksum_type]] || []).dup
-    else
-      DownloadedFile.where(checksum: checksum, checksum_type: checksum_type).to_a
-    end
+              (@dedup_cache[[checksum, checksum_type]] || []).dup
+            else
+              DownloadedFile.where(checksum: checksum, checksum_type: checksum_type).to_a
+            end
 
     files.delete_if do |file|
       next false if valid_on_disk?(file)

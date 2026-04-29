@@ -6,7 +6,7 @@ Config.setup do |config|
   config.merge_nil_values = false
 end
 
-module RMT::Config
+module RMT::Config # rubocop:disable Metrics/ModuleLength
 
   # In specs, configuration will only be loaded from 'config/rmt.yml'
   CONFIG_FILES = [
@@ -52,15 +52,16 @@ module RMT::Config
     # Pin the revalidation decision at mirror start to avoid mid-run changes at midnight.
     # Call pin_revalidation! at the beginning of a mirror run, unpin_revalidation! at the end.
     def pin_revalidation!
-      @pinned_revalidate_repodata = revalidate_repodata?
+      @pinned_revalidate_repodata = revalidate_repodata? # rubocop:disable ThreadSafety/InstanceVariableInClassMethod
     end
 
     def unpin_revalidation!
-      @pinned_revalidate_repodata = nil
+      @pinned_revalidate_repodata = nil # rubocop:disable ThreadSafety/InstanceVariableInClassMethod
     end
 
     def revalidate_repodata_pinned?
-      return @pinned_revalidate_repodata unless @pinned_revalidate_repodata.nil?
+      return @pinned_revalidate_repodata unless @pinned_revalidate_repodata.nil? # rubocop:disable ThreadSafety/InstanceVariableInClassMethod
+
       revalidate_repodata?
     end
 
@@ -71,24 +72,24 @@ module RMT::Config
       return false if raw.nil?
 
       day_names = %w[sunday monday tuesday wednesday thursday friday saturday]
-      today = Time.now.wday
+      today = Time.now.wday # rubocop:disable Rails/TimeZone
 
       # Config gem wraps YAML arrays as Config::Options (hash-like: {"0"=>"sat", "1"=>"wed"}).
       # Extract values for hash-like objects, wrap scalars in Array.
       entries = if raw.is_a?(Array)
-        raw
-      elsif raw.respond_to?(:values)
-        raw.values
-      else
-        [raw]
-      end
+                  raw
+                elsif raw.respond_to?(:values)
+                  raw.values
+                else
+                  [raw]
+                end
 
       entries.any? do |entry|
         target = if entry.is_a?(Integer) || entry.to_s.match?(/\A\d+\z/)
-          entry.to_i
-        else
-          day_names.index(entry.to_s.downcase)
-        end
+                   entry.to_i
+                 else
+                   day_names.index(entry.to_s.downcase)
+                 end
         target && target >= 0 && target <= 6 && today == target
       end
     end
@@ -188,6 +189,7 @@ module RMT::Config
       return nil if converted.nil?
       return nil if converted < min
       return nil if max && converted > max
+
       converted
     end
 

@@ -21,7 +21,10 @@ class RMT::Mirror::Base
   end
 
   def mirror
-    logger.info _('Mirroring repository %{repo} (ID: %{id}) to %{dir}') % { repo: repository.name || repository_url, id: repository.friendly_id, dir: repository_path }
+    logger.info(
+      _('Mirroring repository %{repo} (ID: %{id}) to %{dir}') %
+        { repo: repository.name || repository_url, id: repository.friendly_id, dir: repository_path }
+    )
     mirror_implementation
 
     [downloader.downloaded_files_count, downloader.downloaded_files_size]
@@ -39,7 +42,7 @@ class RMT::Mirror::Base
 
   BATCH_QUERY_SIZE = 500 # MySQL max_prepared_stmt params=65535, SQLite SQLITE_MAX_VARIABLE_NUMBER=999
   VALID_CHECKSUM_TYPES = %w[SHA256 SHA512 SHA1 MD5].freeze
-  CHECKSUM_HEX_PATTERN = /\A[a-f0-9]+\z/i
+  CHECKSUM_HEX_PATTERN = /\A[a-f0-9]+\z/i.freeze
   CHECKSUM_LENGTHS = { 'SHA256' => 64, 'SHA512' => 128, 'SHA1' => 40, 'MD5' => 32 }.freeze
 
   def file_reference(relative, to:)
@@ -136,7 +139,7 @@ class RMT::Mirror::Base
     @dedup_cache = nil
   end
 
-  def prefetch_downloaded_files(packages)
+  def prefetch_downloaded_files(packages) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     checksums = packages
       .select { |p| p.checksum && p.checksum_type }
       .map { |p| [p.checksum, p.checksum_type.upcase] }
@@ -144,7 +147,7 @@ class RMT::Mirror::Base
       .uniq
     return {} if checksums.empty?
 
-    @logger.debug("Prefetching dedup cache for %d unique checksums" % checksums.size)
+    @logger.debug('Prefetching dedup cache for %d unique checksums' % checksums.size)
 
     records = checksums.group_by(&:last).flat_map do |checksum_type, pairs|
       checksum_values = pairs.map(&:first)

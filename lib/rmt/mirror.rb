@@ -20,9 +20,9 @@ class RMT::Mirror
                       mirror_sources: mirror_sources,
                       is_airgapped: is_airgapped }
 
-    @logger.debug("Detecting repository type for #{repository.friendly_id}")
+    @logger&.debug("Detecting repository type for #{repository.friendly_id}")
     instance = repository_mirror_class.new(**configuration)
-    @logger.debug("Type detected: #{repository_type}, starting mirror for #{repository.friendly_id}")
+    @logger&.debug("Type detected: #{repository_type}, starting mirror for #{repository.friendly_id}")
     instance.mirror
   end
 
@@ -41,9 +41,9 @@ class RMT::Mirror
 
   def repository_type
     cached = repository.mirroring_type&.downcase&.to_sym
-    if cached.present? && !VALID_MIRROR_TYPES.include?(cached)
+    if cached.present? && VALID_MIRROR_TYPES.exclude?(cached)
       sanitized_type = repository.mirroring_type.to_s.gsub(/[^[:print:]]/, '?')[0..15]
-      @logger.warn("Invalid cached mirroring_type '#{sanitized_type}' for repository #{repository.friendly_id}, re-detecting")
+      @logger&.warn("Invalid cached mirroring_type '#{sanitized_type}' for repository #{repository.friendly_id}, re-detecting")
     end
     return cached if VALID_MIRROR_TYPES.include?(cached)
 
@@ -52,7 +52,7 @@ class RMT::Mirror
       begin
         repository.update!(mirroring_type: detected.to_s)
       rescue ActiveRecord::RecordInvalid => e
-        @logger.warn("Failed to cache mirroring_type for repository #{repository.friendly_id}: #{e.message}")
+        @logger&.warn("Failed to cache mirroring_type for repository #{repository.friendly_id}: #{e.message}")
       end
     end
     detected
