@@ -8,17 +8,39 @@ require 'rmt/fiber_request'
 require 'rmt/deduplicator'
 
 class RMT::Downloader
+  MAX_BACKOFF = 300
+  MAX_429_RETRIES = 5
+  MIN_RATE_LIMIT_DELAY = 30
+  MAX_DEFERRED_QUEUE_SIZE = 1000 # concurrency(32) * max_retries(20) ~ 800 max under normal conditions
+
+  QueueItem = Struct.new(:file_reference, :failed_downloads, :retries, :retry_after, keyword_init: true) do
+    def ready?
+      retry_after.nil? || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= retry_after
+    end
+  end
+
+  # Deprecated constants kept for backward compat
   RETRIES = 4
   RETRY_DELAY_SECONDS = 2
 
-  attr_accessor :concurrency, :logger, :auth_token
-  attr_reader :downloaded_files_count, :downloaded_files_size
+  attr_reader :concurrency, :head_concurrency, :max_retries, :retry_delay,
+              :exponential_backoff, :downloaded_files_count, :downloaded_files_size
+  attr_accessor :logger, :auth_token
 
-  def initialize(logger:, auth_token: nil, track_files: true)
+  def initialize(logger:, auth_token: nil, track_files: true,
+                 concurrency: RMT::Config.download_concurrency,
+                 head_concurrency: RMT::Config.head_concurrency,
+                 max_retries: RMT::Config.retry_count,
+                 retry_delay: RMT::Config.retry_delay,
+                 exponential_backoff: RMT::Config.exponential_backoff?)
     Typhoeus::Config.user_agent = "RMT/#{RMT::VERSION}"
     Typhoeus::Config.verbose = Settings.try(:http_client).try(:verbose)
 
-    @concurrency = 4
+    @concurrency = concurrency
+    @head_concurrency = head_concurrency
+    @max_retries = max_retries
+    @retry_delay = retry_delay
+    @exponential_backoff = exponential_backoff
     @auth_token = auth_token
     @logger = logger
     @track_files = track_files
@@ -30,34 +52,57 @@ class RMT::Downloader
   # returns the list of files that failed to download when 'ignore_errors: true',
   # otherwise raises RMT::Downloader::Exception if any file fails to download
   def download_multi(files, ignore_errors: false)
+    @rate_limit_retries = {}
+    @rate_limited = false
+
     downloads_needed, failed_cache =
       try_copying_from_cache(files, ignore_errors: ignore_errors)
     return failed_cache if downloads_needed.empty?
 
-    @queue = downloads_needed
+    @queue = downloads_needed.map { |f| QueueItem.new(file_reference: f) }
     @hydra = Typhoeus::Hydra.new(max_concurrency: @concurrency)
     failed_downloads = ignore_errors ? failed_cache : nil
     # initialize queue with @concurrency items, so hydra can work in parallel
     @concurrency.times { process_queue(failed_downloads) }
 
-    @hydra.run
+    loop do
+      @hydra.run
+      # Re-seed after hydra.run - items may have been queued by ensure blocks
+      @concurrency.times { process_queue(failed_downloads) }
+      @hydra.run unless @queue.empty?
+
+      break if @queue.empty?
+
+      wait_for_deferred(failed_downloads)
+    end
+    @hydra = nil
     failed_downloads
   end
 
   protected
 
+  def wait_for_deferred(failed_downloads)
+    deferred = @queue.reject(&:ready?)
+    return if deferred.empty?
+
+    earliest = deferred.map(&:retry_after).min
+    wait = [earliest - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0.1].max
+    @logger.debug("All download slots idle, waiting #{format('%.1f', wait)}s for #{deferred.size} deferred items")
+    sleep(wait)
+    @concurrency.times { process_queue(failed_downloads) }
+  end
+
   # Creates a fiber that wraps RMT::FiberRequest and runs it, returning the RMT::FiberRequest object.
   # @param [RMT::Mirror::FileReference] file_reference with all file metadata attributes and paths (remote, local, cache)
   # @param [Array] failed_downloads array of remote files that have failed downloads, passed by reference, prevents from raising RMT::Downloader exceptions
   # @return [RMT::FiberRequest] a request that can be run individually or with Typhoeus::Hydra
-  def create_fiber_request(file_reference, failed_downloads: nil, retries: RETRIES)
+  def create_fiber_request(file_reference, failed_downloads: nil, retries: @max_retries)
     make_file_dir(file_reference.local_path)
 
     request_fiber = Fiber.new do
       begin
         # make_request will call Fiber.yield on this fiber (request_fiber), returning the request object
         # this fiber will be resumed by on_body callback once the request is executed
-
         response = make_request(file_reference, request_fiber)
         finalize_download(response.request, file_reference)
       rescue RMT::Downloader::Exception, RMT::ChecksumVerifier::Exception => e
@@ -70,20 +115,22 @@ class RMT::Downloader
             nil
           else
             # empty queue when raising, so the downloader can get re-used
+            dropped = @queue.count(&:retry_after)
+            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0 # rubocop:disable Metrics/BlockNesting
             @queue = []
-            @hydra.multi.easy_handles.each do |handle|
+            @hydra.multi.easy_handles.to_a.each do |handle|
               @hydra.multi.delete(handle)
             end
             raise e
           end
+        elsif e.try(:http_code) == 429
+          handle_rate_limit(file_reference, e, failed_downloads: failed_downloads, retries: retries)
         else
+          delay = compute_delay(retries)
           @logger.warn(_('Downloading %{file_reference} failed with %{message}. Retrying %{retries} more times after %{seconds} seconds') % {
-            file_reference: file_reference.remote_path, message: e.message, retries: retries, seconds: RETRY_DELAY_SECONDS
+            file_reference: file_reference.remote_path, message: e.message, retries: retries, seconds: delay
           })
-          sleep(RETRY_DELAY_SECONDS)
-          # re-enqueuing with retries -= 1
-          request = create_fiber_request(file_reference, failed_downloads: failed_downloads, retries: (retries - 1))
-          @hydra.queue(request) if request
+          enqueue_retry(file_reference, failed_downloads: failed_downloads, retries: retries - 1, delay: delay)
         end
       ensure
         process_queue(failed_downloads)
@@ -94,11 +141,103 @@ class RMT::Downloader
 
   # enqueuing requests one-by-one, so we don't run into 'too many open files' errors
   def process_queue(failed_downloads = nil)
-    queue_item = @queue.shift
-    return unless queue_item
+    ready_index = @queue.index(&:ready?)
+    return unless ready_index
 
-    request = create_fiber_request(queue_item, failed_downloads: failed_downloads)
+    queue_item = @queue.delete_at(ready_index)
+    request = create_fiber_request(
+      queue_item.file_reference,
+      failed_downloads: queue_item.failed_downloads || failed_downloads,
+      retries: queue_item.retries || @max_retries
+    )
     @hydra.queue(request) if request
+  end
+
+  def handle_rate_limit(file_reference, exception, failed_downloads:, retries:)
+    file_key = file_reference.local_path
+    @rate_limit_retries[file_key] = (@rate_limit_retries[file_key] || 0) + 1
+
+    if @rate_limit_retries[file_key] >= MAX_429_RETRIES
+      @logger.warn(_('Rate limit retries exhausted for %{file_reference}. Giving up.') % {
+        file_reference: file_reference.remote_path
+      })
+      if failed_downloads
+        failed_downloads << file_reference
+      else
+        dropped = @queue.count(&:retry_after)
+        @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0
+        @queue = []
+        @hydra.multi.easy_handles.to_a.each { |handle| @hydra.multi.delete(handle) }
+        raise exception
+      end
+    else
+      rate_limit_attempt = @rate_limit_retries[file_key]
+      computed_429_delay = @retry_delay * (2**rate_limit_attempt)
+      retry_after = parse_retry_after(exception.try(:response)) || [computed_429_delay, MIN_RATE_LIMIT_DELAY].max
+      retry_after = [retry_after, MAX_BACKOFF].min
+      @logger.warn(_('Rate limited downloading %{file_reference}. Waiting %{seconds} seconds (attempt %{attempt}/%{max})') % {
+        file_reference: file_reference.remote_path, seconds: retry_after,
+        attempt: rate_limit_attempt, max: MAX_429_RETRIES
+      })
+      enqueue_retry(file_reference, failed_downloads: failed_downloads, retries: retries, delay: retry_after)
+    end
+  end
+
+  def enqueue_retry(file_reference, failed_downloads:, retries:, delay:)
+    deferred_count = @queue.count { |i| !i.ready? }
+    if deferred_count >= MAX_DEFERRED_QUEUE_SIZE
+      @logger.warn(format('Deferred retry queue full (%{count} items), cannot retry %{file}', count: deferred_count, file: file_reference.remote_path))
+      if failed_downloads
+        failed_downloads << file_reference
+      else
+        # Clean up before raising, same pattern as fatal error path
+        dropped = @queue.count(&:retry_after)
+        @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0
+        @queue = []
+        @hydra.multi.easy_handles.to_a.each { |handle| @hydra.multi.delete(handle) }
+        raise RMT::Downloader::Exception.new(
+          _('Deferred retry queue full, cannot retry %{file}') % { file: file_reference.remote_path }
+        )
+      end
+    else
+      @queue.push(
+        QueueItem.new(
+          file_reference: file_reference,
+          failed_downloads: failed_downloads,
+          retries: retries,
+          retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) + delay
+        )
+      )
+    end
+  end
+
+  def compute_delay(remaining_retries)
+    if @exponential_backoff
+      attempt = @max_retries - remaining_retries
+      computed = @retry_delay * (2**attempt)
+      capped = [computed, MAX_BACKOFF].min
+      rand(1..capped)
+    else
+      @retry_delay
+    end
+  end
+
+  def parse_retry_after(response)
+    return nil unless response
+
+    header = response.headers&.[]('Retry-After')
+    return nil unless header
+
+    seconds = Integer(header) rescue nil
+    unless seconds
+      sanitized = header.to_s.gsub(/[^[:print:]]/, '?')[0..30]
+      @logger.debug("Retry-After header '#{sanitized}' is not an integer, ignoring")
+      return nil
+    end
+    return seconds if seconds > 0 && seconds <= MAX_BACKOFF
+
+    @logger.debug("Retry-After value #{seconds} outside bounds (1..#{MAX_BACKOFF}), ignoring")
+    nil
   end
 
   def make_request(file, request_fiber)
@@ -116,7 +255,7 @@ class RMT::Downloader
     request.receive_body
   end
 
-  def try_copying_from_cache(files, ignore_errors: false)
+  def try_copying_from_cache(files, ignore_errors: false) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     # We need to verify if the cached copy is still relevant
     # Create a HTTP/HTTPS HEAD request if possible, return nil if not
     cache_requests = files.index_with { |file| cache_head_request(file) }
@@ -125,17 +264,28 @@ class RMT::Downloader
     # Download everything if the cache is empty
     return [files, []] if available_in_cache.empty?
 
-    hydra = Typhoeus::Hydra.new(max_concurrency: @concurrency)
+    hydra = Typhoeus::Hydra.new(max_concurrency: @head_concurrency)
+    @rate_limited = false
+
     available_in_cache.each do |request|
       request.on_complete do |response|
+        next if @rate_limited
+
+        if response.code == 429
+          @logger.warn(_('Rate limited during cache validation. Treating remaining files as uncached.'))
+          @rate_limited = true
+          next
+        end
+
         if invalid_response?(response)
-          request.retries ||= RETRIES
+          request.retries ||= @max_retries
           if request.retries > 0
+            delay = compute_delay(request.retries)
             @logger.warn(_('Poking %{file_reference} failed with %{message}. Retrying %{retries} more times after %{seconds} seconds') % {
               file_reference: URI(request.base_url).path, message: "#{response.return_code} (#{response.code})",
-              retries: request.retries, seconds: RETRY_DELAY_SECONDS
+              retries: request.retries, seconds: delay
             })
-            sleep(RETRY_DELAY_SECONDS)
+            sleep(delay)
             request.retries -= 1
             request.run
           end
@@ -144,6 +294,11 @@ class RMT::Downloader
       hydra.queue(request)
     end
     hydra.run
+
+    if @rate_limited
+      @rate_limited = false
+      return [files, []]
+    end
 
     downloads_needed = []
     failed_files = []
@@ -176,9 +331,20 @@ class RMT::Downloader
     # response.headers returns Typhoeus::Response::Headers, which takes care of
     # case-sensitive concerns with the header's key
     last_modified_header = response.headers['Last-Modified']
-    return false unless last_modified_header
+    if last_modified_header
+      return file.cache_timestamp == Time.parse(last_modified_header).utc
+    end
 
-    file.cache_timestamp == Time.parse(last_modified_header).utc
+    # Fallback: use Content-Length comparison when Last-Modified is unavailable.
+    # This avoids re-downloading unchanged files from servers without Last-Modified.
+    content_length = response.headers['Content-Length']
+    if content_length && content_length.to_s.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
+      @logger.debug('  (no Last-Modified header, using Content-Length comparison)')
+      return File.size(file.cache_path) == content_length.to_i
+    end
+
+    @logger.debug('  (no Last-Modified or Content-Length header, treating cache as stale)')
+    false
   end
 
   def copy_from_cache(file)
@@ -187,7 +353,7 @@ class RMT::Downloader
       FileUtils.cp(file.cache_path, file.local_path, preserve: true)
     end
     @logger.info("→ #{File.basename(file.local_path)}")
-    @logger.debug("  (cached mtime matches server last modified: #{file.cache_timestamp})")
+    @logger.debug('  (cached file is current)')
   end
 
   def finalize_download(request, file)

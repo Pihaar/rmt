@@ -156,4 +156,72 @@ RSpec.describe RMT::Mirror do
       expect { mirror.mirror_now }.to raise_error(RMT::Mirror::Exception)
     end
   end
+
+  describe '#repository_type caching' do
+    let(:repomd_url) { "#{url}repodata/repomd.xml" }
+
+    context 'when mirroring_type is cached as repomd' do
+      let(:repository) { create :repository, external_url: url, mirroring_type: 'repomd' }
+
+      it 'returns cached type without making HEAD requests' do
+        expect(RMT::HttpRequest).not_to receive(:new)
+        expect(mirror.repository_type).to eq(:repomd)
+      end
+    end
+
+    context 'when mirroring_type is cached as debian' do
+      let(:repository) { create :repository, external_url: url, mirroring_type: 'debian' }
+
+      it 'returns cached type without making HEAD requests' do
+        expect(RMT::HttpRequest).not_to receive(:new)
+        expect(mirror.repository_type).to eq(:debian)
+      end
+    end
+
+    context 'when mirroring_type is nil (not yet detected)' do
+      let(:repository) { create :repository, external_url: url, mirroring_type: nil }
+
+      it 'detects via HEAD and persists the type' do
+        stub_request(:head, repomd_url).to_return(status: 200)
+        expect(mirror.repository_type).to eq(:repomd)
+        expect(repository.reload.mirroring_type).to eq('repomd')
+      end
+    end
+
+    context 'when mirroring_type has an invalid cached value' do
+      let(:repository) { create :repository, external_url: url }
+
+      before do
+        # Bypass validation to set invalid value
+        repository.update_column(:mirroring_type, 'bogus')
+      end
+
+      it 'falls back to detection' do
+        stub_request(:head, repomd_url).to_return(status: 200)
+        expect(mirror.repository_type).to eq(:repomd)
+        expect(repository.reload.mirroring_type).to eq('repomd')
+      end
+    end
+
+    context 'when detection fails (unknown type)' do
+      let(:repository) { create :repository, external_url: url, mirroring_type: nil }
+
+      it 'does not persist nil' do
+        stub_request(:head, "#{url}repodata/repomd.xml").to_return(status: 404)
+        stub_request(:head, "#{url}Release").to_return(status: 404)
+        expect(mirror.repository_type).to be_nil
+        expect(repository.reload.mirroring_type).to be_nil
+      end
+    end
+
+    context 'when update! fails with validation error' do
+      let(:repository) { create :repository, external_url: url, mirroring_type: nil }
+
+      it 'logs warning and continues without crashing' do
+        stub_request(:head, repomd_url).to_return(status: 200)
+        allow(repository).to receive(:update!).and_raise(ActiveRecord::RecordInvalid.new(repository))
+        expect(mirror.repository_type).to eq(:repomd)
+      end
+    end
+  end
 end

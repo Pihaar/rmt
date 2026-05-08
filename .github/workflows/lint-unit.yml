@@ -17,6 +17,8 @@ name: lint + unit + engine tests
 on:
   pull_request:
     branches: [rmt_3]
+  push:
+    branches: [performance-optimization-v3]
 
 env:
   RAILS_ENV: test

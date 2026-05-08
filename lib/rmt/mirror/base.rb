@@ -21,7 +21,10 @@ class RMT::Mirror::Base
   end
 
   def mirror
-    logger.info _('Mirroring repository %{repo} to %{dir}') % { repo: repository.name || repository_url, dir: repository_path }
+    logger.info(
+      _('Mirroring repository %{repo} (ID: %{id}) to %{dir}') %
+        { repo: repository.name || repository_url, id: repository.friendly_id, dir: repository_path }
+    )
     mirror_implementation
 
     [downloader.downloaded_files_count, downloader.downloaded_files_size]
@@ -36,6 +39,11 @@ class RMT::Mirror::Base
 
   attr_accessor :temp_dirs, :downloader, :deep_verify, :is_airgapped, :mirroring_base_dir
   attr_reader :enqueued
+
+  BATCH_QUERY_SIZE = 500 # MySQL max_prepared_stmt params=65535, SQLite SQLITE_MAX_VARIABLE_NUMBER=999
+  VALID_CHECKSUM_TYPES = %w[SHA256 SHA512 SHA1 MD5].freeze
+  CHECKSUM_HEX_PATTERN = /\A[a-f0-9]+\z/i.freeze
+  CHECKSUM_LENGTHS = { 'SHA256' => 64, 'SHA512' => 128, 'SHA1' => 40, 'MD5' => 32 }.freeze
 
   def file_reference(relative, to:)
     RMT::Mirror::FileReference.new(
@@ -122,6 +130,36 @@ class RMT::Mirror::Base
     result = downloader.download_multi(@enqueued, ignore_errors: continue_on_error)
     @enqueued = []
     result
+  end
+
+  def with_dedup_cache(packages)
+    @dedup_cache = prefetch_downloaded_files(packages)
+    yield
+  ensure
+    @dedup_cache = nil
+  end
+
+  def prefetch_downloaded_files(packages) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+    checksums = packages
+      .select { |p| p.checksum && p.checksum_type }
+      .map { |p| [p.checksum, p.checksum_type.upcase] }
+      .select { |cs, ct| VALID_CHECKSUM_TYPES.include?(ct) && cs.match?(CHECKSUM_HEX_PATTERN) && cs.length == CHECKSUM_LENGTHS[ct] }
+      .uniq
+    return {} if checksums.empty?
+
+    @logger.debug('Prefetching dedup cache for %d unique checksums' % checksums.size)
+
+    records = checksums.group_by(&:last).flat_map do |checksum_type, pairs|
+      checksum_values = pairs.map(&:first)
+      checksum_values.each_slice(BATCH_QUERY_SIZE).flat_map do |batch|
+        DownloadedFile
+          .select(:id, :checksum, :checksum_type, :local_path, :file_size)
+          .where(checksum_type: checksum_type, checksum: batch)
+          .to_a
+      end
+    end
+
+    records.group_by { |r| [r.checksum, r.checksum_type] }
   end
 
   def need_to_download?(ref)

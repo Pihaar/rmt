@@ -22,6 +22,10 @@ RSpec.describe RMT::CLI::Mirror do
 
     allow(RMT::Mirror).to receive(:new).and_return(mirror)
     allow(mirror).to receive(:mirror_now)
+    allow(RMT::Config).to receive(:pin_revalidation!).and_call_original
+    allow(RMT::Config).to receive(:unpin_revalidation!).and_call_original
+    # Prevent our new log lines from interfering with stdout assertions
+    allow_any_instance_of(described_class).to receive(:log_mirror_config)
   end
 
   describe '#all' do
@@ -120,12 +124,13 @@ RSpec.describe RMT::CLI::Mirror do
         command
 
         $stdout.rewind
+        lines = $stdout.readlines
 
-        expect($stdout.gets).to match(/Total mirrored repositories: 2/)
-        expect($stdout.gets).to match(/Total transferred files: 2/)
-        expect($stdout.gets).to match(/Total transferred file size: 92 GB/)
-        expect($stdout.gets).to match(/Total Mirror Time: 00:00:00/)
-        expect($stdout.gets).to match(/Mirroring complete./)
+        expect(lines.grep(/Total mirrored repositories: 2/).length).to eq(1)
+        expect(lines.grep(/Total transferred files: 2/).length).to eq(1)
+        expect(lines.grep(/Total transferred file size: 92 GB/).length).to eq(1)
+        expect(lines.grep(/Total Mirror Time: 00:00:00/).length).to eq(1)
+        expect(lines.grep(/Mirroring complete./).length).to eq(1)
       end
 
       context 'failed repository mirroring' do
@@ -192,12 +197,13 @@ RSpec.describe RMT::CLI::Mirror do
         command
 
         $stdout.rewind
+        lines = $stdout.readlines
 
-        expect($stdout.gets).to match(/Total mirrored repositories: 1/)
-        expect($stdout.gets).to match(/Total transferred files: 0/)
-        expect($stdout.gets).to match(/Total transferred file size: 0 Bytes/)
-        expect($stdout.gets).to match(/Total Mirror Time: 00:00:00/)
-        expect($stdout.gets).to match(/Mirroring complete./)
+        expect(lines.grep(/Total mirrored repositories: 1/).length).to eq(1)
+        expect(lines.grep(/Total transferred files: 0/).length).to eq(1)
+        expect(lines.grep(/Total transferred file size: 0 Bytes/).length).to eq(1)
+        expect(lines.grep(/Total Mirror Time: 00:00:00/).length).to eq(1)
+        expect(lines.grep(/Mirroring complete./).length).to eq(1)
       end
     end
 
@@ -299,12 +305,13 @@ RSpec.describe RMT::CLI::Mirror do
         command
 
         $stdout.rewind
+        lines = $stdout.readlines
 
-        expect($stdout.gets).to match(/Total mirrored repositories: 4/)
-        expect($stdout.gets).to match(/Total transferred files: 0/)
-        expect($stdout.gets).to match(/Total transferred file size: 0 Bytes/)
-        expect($stdout.gets).to match(/Total Mirror Time: 00:00:00/)
-        expect($stdout.gets).to match(/Mirroring complete./)
+        expect(lines.grep(/Total mirrored repositories: 4/).length).to eq(1)
+        expect(lines.grep(/Total transferred files: 0/).length).to eq(1)
+        expect(lines.grep(/Total transferred file size: 0 Bytes/).length).to eq(1)
+        expect(lines.grep(/Total Mirror Time: 00:00:00/).length).to eq(1)
+        expect(lines.grep(/Mirroring complete./).length).to eq(1)
       end
     end
 
@@ -390,6 +397,48 @@ RSpec.describe RMT::CLI::Mirror do
           expect { command }.to output(error_log).to_stdout
         end
       end
+    end
+  end
+
+  describe '#log_mirror_config' do
+    it 'logs the effective mirror configuration' do
+      instance = described_class.new
+      allow(instance).to receive(:logger).and_return(RMT::Logger.new('/dev/null'))
+      allow(instance).to receive(:log_mirror_config).and_call_original
+      expect { instance.send(:log_mirror_config) }.not_to raise_error
+    end
+  end
+
+  describe '#mirror_repositories! completion logging' do
+    let(:argv) { ['repository', repository.friendly_id] }
+
+    before do
+      allow(RMT::Mirror).to receive(:new).and_return(mirror)
+      allow(mirror).to receive(:mirror_now).and_return([5, 1024])
+      allow(RMT::Config).to receive(:pin_revalidation!)
+      allow(RMT::Config).to receive(:unpin_revalidation!)
+      allow_any_instance_of(described_class).to receive(:log_mirror_config)
+    end
+
+    it 'logs completion with file count when files were transferred' do
+      $stdout = StringIO.new
+      command rescue nil
+      $stdout.rewind
+      output = $stdout.read
+      expect(output).to include("Completed '#{repository.name}'")
+      expect(output).to include('5 files')
+      $stdout = STDOUT
+    end
+
+    it 'logs up to date when no files were transferred' do
+      allow(mirror).to receive(:mirror_now).and_return([0, 0])
+      $stdout = StringIO.new
+      command rescue nil
+      $stdout.rewind
+      output = $stdout.read
+      expect(output).to include("Completed '#{repository.name}'")
+      expect(output).to include('up to date')
+      $stdout = STDOUT
     end
   end
 end

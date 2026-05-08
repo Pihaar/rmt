@@ -19,15 +19,20 @@ module RMT::FileValidator
   end
 
   def find_valid_files_by_checksum(checksum, checksum_type)
-    files = DownloadedFile
-      .where(checksum: checksum, checksum_type: checksum_type).to_a
+    # @dedup_cache is set by with_dedup_cache in base.rb (cross-module instance variable).
+    # When nil, falls back to per-file DB query (Debian mirror, license mirror, etc.)
+    files = if @dedup_cache
+              (@dedup_cache[[checksum, checksum_type]] || []).dup
+            else
+              DownloadedFile.where(checksum: checksum, checksum_type: checksum_type).to_a
+            end
 
     files.delete_if do |file|
       next false if valid_on_disk?(file)
 
-      # Remove invalid files/DB entries as soon as they are found
       FileUtils.remove_file(file.local_path, force: true)
       file.destroy
+      @dedup_cache&.[]([checksum, checksum_type])&.delete(file)
       true
     end
   end

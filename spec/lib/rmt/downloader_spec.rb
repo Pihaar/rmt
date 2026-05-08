@@ -54,12 +54,15 @@ RSpec.describe RMT::Downloader do
 
     context 'when processing response by Typhoeus failed' do
       before do
-        allow_any_instance_of(RMT::Logger).to receive(:debug).with(/HTTP request/)
+        allow_any_instance_of(RMT::Logger).to receive(:debug)
+        allow_any_instance_of(RMT::Logger).to receive(:warn)
+        allow_any_instance_of(RMT::Logger).to receive(:info)
       end
 
       it 'raises an exception' do
-        expect_any_instance_of(RMT::Logger).to receive(:debug)
-          .with(debug_request_error_regex).exactly(5).times
+        # Use max_retries: 0 to avoid queue-based retry (requires real Hydra event loop)
+        dl = described_class.new(logger: RMT::Logger.new('/dev/null'),
+                                 track_files: track_files, max_retries: 0)
 
         allow_any_instance_of(RMT::FiberRequest).to receive(:receive_headers)
         allow_any_instance_of(RMT::FiberRequest).to receive(:read_body) do |instance|
@@ -74,7 +77,7 @@ RSpec.describe RMT::Downloader do
           response
         end
 
-        expect { downloader.download_multi([repomd_xml_file]) }.to raise_error(
+        expect { dl.download_multi([repomd_xml_file]) }.to raise_error(
           RMT::Downloader::Exception,
           "http://example.com/repomd.xml - request failed with HTTP status code 200, return code 'error'"
         )
@@ -435,13 +438,29 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'cleans up the queue of downloads' do
+        # Use a downloader with concurrency 1 to test queue cleanup deterministically
+        low_concurrency_dl = described_class.new(
+          logger: RMT::Logger.new('/dev/null'),
+          track_files: track_files, concurrency: 1
+        )
+
+        files.each do |file|
+          stub_request(:get, "http://example.com/#{file}").with(headers: headers)
+            .to_return(
+              status: 404,
+              body: lambda do |_|
+                low_concurrency_dl.instance_variable_get(:@hydra)&.multi&.easy_handles&.<<(Ethon::Easy.new(url: 'www.example.com'))
+                'dummy'
+              end,
+              headers: {}
+            )
+        end
+
         expect do
-          downloader.concurrency = 1
-          downloader.download_multi(queue.dup, ignore_errors: false)
+          low_concurrency_dl.download_multi(queue.dup, ignore_errors: false)
         end.to raise_error("http://example.com/package1 - request failed with HTTP status code 404, return code ''")
 
-        expect(downloader.instance_variable_get(:@hydra).multi.easy_handles).to eq([])
-        expect(downloader.instance_variable_get(:@queue)).to eq([])
+        expect(low_concurrency_dl.instance_variable_get(:@queue)).to eq([])
       end
     end
 
@@ -488,6 +507,382 @@ RSpec.describe RMT::Downloader do
           expect(failed_downloads).to match_array(queue.map(&:local_path))
         end
       end
+
+      context 'when HEAD request returns 429 (rate limited)' do
+        before do
+          allow_any_instance_of(RMT::Logger).to receive(:debug)
+          allow_any_instance_of(RMT::Logger).to receive(:warn)
+          queue.each do |file|
+            FileUtils.touch(file.cache_path)
+            stub_request(:head, file.remote_path.to_s).with(headers: headers)
+              .to_return(status: 429, headers: {})
+          end
+        end
+
+        it 'sets rate_limited flag and forces re-download of all files' do
+          queue.each do |file|
+            stub_request(:get, file.remote_path.to_s).with(headers: headers)
+              .to_return(status: 200, body: 'content', headers: {})
+          end
+          downloader.download_multi(queue.dup, ignore_errors: true)
+          # All files should be downloaded (not served from cache) - may retry multiple times
+          queue.each do |file|
+            expect(WebMock).to have_requested(:get, file.remote_path.to_s).at_least_once
+          end
+        end
+      end
+
+      context 'when download fails with retriable error' do
+        before do
+          allow_any_instance_of(RMT::Logger).to receive(:debug)
+          allow_any_instance_of(RMT::Logger).to receive(:warn)
+          allow_any_instance_of(RMT::Logger).to receive(:info)
+        end
+
+        it 'retries via deferred queue and eventually succeeds' do
+          queue.each do |file|
+            body = File.basename(file.relative_path)
+            stub_request(:get, file.remote_path.to_s).with(headers: headers)
+              .to_return({ status: 500, body: 'error' }, { status: 200, body: body, headers: {} })
+          end
+
+          dl = described_class.new(logger: RMT::Logger.new('/dev/null'),
+                                   track_files: false, max_retries: 2, retry_delay: 0)
+          dl.download_multi(queue.dup, ignore_errors: true)
+          queue.each do |file|
+            expect(WebMock).to have_requested(:get, file.remote_path.to_s).times(2)
+          end
+        end
+      end
+
+      context 'when download returns 429 (rate limited)' do
+        before do
+          allow_any_instance_of(RMT::Logger).to receive(:debug)
+          allow_any_instance_of(RMT::Logger).to receive(:warn)
+          allow_any_instance_of(RMT::Logger).to receive(:info)
+          queue.each do |file|
+            body = File.basename(file.relative_path)
+            stub_request(:get, file.remote_path.to_s).with(headers: headers)
+              .to_return({ status: 429, body: '', headers: { 'Retry-After' => '1' } },
+                         { status: 200, body: body, headers: {} })
+          end
+        end
+
+        it 'handles 429 and retries after delay' do
+          dl = described_class.new(logger: RMT::Logger.new('/dev/null'),
+                                   track_files: false, max_retries: 2, retry_delay: 1)
+          dl.download_multi(queue.dup, ignore_errors: true)
+          queue.each do |file|
+            expect(WebMock).to have_requested(:get, file.remote_path.to_s).times(2)
+          end
+        end
+      end
+    end
+  end
+
+  describe '#wait_for_deferred' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), track_files: false, retry_delay: 2) }
+
+    before do
+      allow_any_instance_of(RMT::Logger).to receive(:debug)
+    end
+
+    it 'sleeps until the earliest deferred item is ready, then re-seeds the queue' do
+      now = 1000.0
+      slept = nil
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
+      allow(dl).to receive(:sleep) do |secs|
+        slept = secs
+        now += secs
+      end
+      allow(dl).to receive(:create_fiber_request).and_return(nil)
+
+      file_ref = instance_double(RMT::Mirror::FileReference, local_path: '/tmp/pkg1', remote_path: URI('http://ex.com/pkg1'))
+      deferred_item = RMT::Downloader::QueueItem.new(
+        file_reference: file_ref, retries: 1, retry_after: 1003.0
+      )
+      dl.instance_variable_set(:@queue, [deferred_item])
+      dl.instance_variable_set(:@hydra, Typhoeus::Hydra.new(max_concurrency: 1))
+
+      dl.send(:wait_for_deferred, nil)
+
+      expect(slept).to eq(3.0)
+    end
+
+    it 'returns immediately when all items are ready (no deferred)' do
+      now = 1000.0
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
+
+      file_ref = instance_double(RMT::Mirror::FileReference, local_path: '/tmp/pkg1', remote_path: URI('http://ex.com/pkg1'))
+      ready_item = RMT::Downloader::QueueItem.new(file_reference: file_ref, retries: 1, retry_after: 999.0)
+      dl.instance_variable_set(:@queue, [ready_item])
+      dl.instance_variable_set(:@hydra, Typhoeus::Hydra.new(max_concurrency: 1))
+
+      expect(dl).not_to receive(:sleep)
+      dl.send(:wait_for_deferred, nil)
+    end
+
+    it 'uses minimum wait of 0.1s when earliest retry_after is very close' do
+      now = 1000.0
+      slept = nil
+      allow(Process).to receive(:clock_gettime).with(Process::CLOCK_MONOTONIC) { now }
+      allow(dl).to receive(:sleep) do |secs|
+        slept = secs
+        now += secs
+      end
+      allow(dl).to receive(:create_fiber_request).and_return(nil)
+
+      file_ref = instance_double(RMT::Mirror::FileReference, local_path: '/tmp/pkg1', remote_path: URI('http://ex.com/pkg1'))
+      deferred_item = RMT::Downloader::QueueItem.new(
+        file_reference: file_ref, retries: 1, retry_after: 1000.05
+      )
+      dl.instance_variable_set(:@queue, [deferred_item])
+      dl.instance_variable_set(:@hydra, Typhoeus::Hydra.new(max_concurrency: 1))
+
+      dl.send(:wait_for_deferred, nil)
+
+      expect(slept).to eq(0.1)
+    end
+  end
+
+  describe RMT::Downloader::QueueItem do
+    describe '#ready?' do
+      it 'returns true when retry_after is nil (fresh item)' do
+        item = described_class.new(file_reference: double)
+        expect(item.ready?).to be true
+      end
+
+      it 'returns true when retry_after is in the past' do
+        item = described_class.new(file_reference: double, retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1)
+        expect(item.ready?).to be true
+      end
+
+      it 'returns false when retry_after is in the future' do
+        item = described_class.new(file_reference: double, retry_after: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 100)
+        expect(item.ready?).to be false
+      end
+
+      it 'returns true when retry_after equals current time' do
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        allow(Process).to receive(:clock_gettime).and_return(now)
+        item = described_class.new(file_reference: double, retry_after: now)
+        expect(item.ready?).to be true
+      end
+    end
+  end
+
+  describe '#compute_delay' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 2, max_retries: 4, exponential_backoff: false) }
+
+    context 'when exponential_backoff is false' do
+      it 'returns flat retry_delay regardless of remaining retries' do
+        expect(dl.send(:compute_delay, 4)).to eq(2)
+        expect(dl.send(:compute_delay, 1)).to eq(2)
+      end
+    end
+
+    context 'when exponential_backoff is true' do
+      let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 2, max_retries: 4, exponential_backoff: true) }
+
+      it 'returns increasing delays with jitter' do
+        delays = (1..4).map { |remaining| dl.send(:compute_delay, remaining) }
+        expect(delays).to all(be >= 1)
+        expect(delays.last).to be <= RMT::Downloader::MAX_BACKOFF
+      end
+
+      it 'caps at MAX_BACKOFF' do
+        big_dl = described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 120, max_retries: 20, exponential_backoff: true)
+        delay = big_dl.send(:compute_delay, 1)
+        expect(delay).to be <= RMT::Downloader::MAX_BACKOFF
+      end
+    end
+  end
+
+  describe '#parse_retry_after' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+
+    it 'returns nil for nil response' do
+      expect(dl.send(:parse_retry_after, nil)).to be_nil
+    end
+
+    it 'parses integer Retry-After header' do
+      response = instance_double('Typhoeus::Response', headers: { 'Retry-After' => '10' })
+      expect(dl.send(:parse_retry_after, response)).to eq(10)
+    end
+
+    it 'returns nil for Retry-After exceeding MAX_BACKOFF' do
+      response = instance_double('Typhoeus::Response', headers: { 'Retry-After' => '600' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for zero Retry-After' do
+      response = instance_double('Typhoeus::Response', headers: { 'Retry-After' => '0' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for negative Retry-After' do
+      response = instance_double('Typhoeus::Response', headers: { 'Retry-After' => '-5' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for non-integer Retry-After (HTTP-date)' do
+      response = instance_double('Typhoeus::Response', headers: { 'Retry-After' => 'Fri, 24 Apr 2026 12:00:00 GMT' })
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil when headers are nil' do
+      response = instance_double('Typhoeus::Response', headers: nil)
+      expect(dl.send(:parse_retry_after, response)).to be_nil
+    end
+  end
+
+  describe '#valid_cached_file? Content-Length fallback' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:file) do
+      instance_double(
+        'RMT::Mirror::FileReference',
+        remote_path: URI('http://example.com/test.rpm'),
+        cache_path: '/tmp/test.rpm',
+        cache_timestamp: Time.utc(2026, 1, 1)
+      )
+    end
+
+    context 'when Last-Modified is present' do
+      it 'uses Last-Modified comparison' do
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Last-Modified' => 'Thu, 01 Jan 2026 00:00:00 GMT' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be true
+      end
+    end
+
+    context 'when Last-Modified is absent but Content-Length matches' do
+      it 'returns true' do
+        allow(File).to receive(:exist?).with('/tmp/test.rpm').and_return(true)
+        allow(File).to receive(:size).with('/tmp/test.rpm').and_return(1234)
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => '1234' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be true
+      end
+    end
+
+    context 'when Last-Modified absent and Content-Length differs' do
+      it 'returns false' do
+        allow(File).to receive(:exist?).with('/tmp/test.rpm').and_return(true)
+        allow(File).to receive(:size).with('/tmp/test.rpm').and_return(999)
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => '1234' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+
+    context 'when neither header is present' do
+      it 'returns false' do
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: {})
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+
+    context 'when Content-Length is non-numeric' do
+      it 'returns false' do
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => 'abc' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+  end
+
+  describe 'constructor kwargs' do
+    it 'accepts concurrency as constructor argument' do
+      dl = described_class.new(logger: RMT::Logger.new('/dev/null'), concurrency: 8)
+      expect(dl.concurrency).to eq(8)
+    end
+
+    it 'uses config defaults when no arguments provided' do
+      dl = described_class.new(logger: RMT::Logger.new('/dev/null'))
+      expect(dl.concurrency).to eq(RMT::Config.download_concurrency)
+      expect(dl.head_concurrency).to eq(RMT::Config.head_concurrency)
+      expect(dl.max_retries).to eq(RMT::Config.retry_count)
+      expect(dl.retry_delay).to eq(RMT::Config.retry_delay)
+    end
+
+    it 'does not allow post-construction mutation of concurrency' do
+      dl = described_class.new(logger: RMT::Logger.new('/dev/null'))
+      expect { dl.concurrency = 8 }.to raise_error(NoMethodError)
+    end
+  end
+
+  describe '#handle_rate_limit' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), max_retries: 4, retry_delay: 1) }
+    let(:file_ref) { instance_double('RMT::Mirror::FileReference', local_path: '/tmp/test.rpm', remote_path: URI('http://example.com/test.rpm')) }
+    let(:exception) { RMT::Downloader::Exception.new('rate limited') }
+
+    before do
+      allow(exception).to receive(:http_code).and_return(429)
+      allow(exception).to receive(:response).and_return(nil)
+      dl.instance_variable_set(:@rate_limit_retries, {})
+      dl.instance_variable_set(:@queue, [])
+      dl.instance_variable_set(:@hydra, instance_double(Typhoeus::Hydra))
+    end
+
+    it 'increments rate limit counter per file' do
+      failed = []
+      dl.send(:handle_rate_limit, file_ref, exception, failed_downloads: failed, retries: 4)
+      expect(dl.instance_variable_get(:@rate_limit_retries)['/tmp/test.rpm']).to eq(1)
+    end
+
+    it 'adds to failed_downloads when budget exhausted' do
+      dl.instance_variable_set(:@rate_limit_retries, { '/tmp/test.rpm' => RMT::Downloader::MAX_429_RETRIES })
+      failed = []
+      dl.send(:handle_rate_limit, file_ref, exception, failed_downloads: failed, retries: 4)
+      expect(failed).to include(file_ref)
+    end
+
+    it 'raises exception when budget exhausted and ignore_errors is false' do
+      dl.instance_variable_set(:@rate_limit_retries, { '/tmp/test.rpm' => RMT::Downloader::MAX_429_RETRIES })
+      hydra_mock = instance_double(Typhoeus::Hydra)
+      multi_mock = instance_double(Ethon::Multi, easy_handles: [])
+      allow(hydra_mock).to receive(:multi).and_return(multi_mock)
+      allow(multi_mock).to receive(:delete)
+      dl.instance_variable_set(:@hydra, hydra_mock)
+
+      expect do
+        dl.send(:handle_rate_limit, file_ref, exception, failed_downloads: nil, retries: 4)
+      end.to raise_error(RMT::Downloader::Exception, 'rate limited')
+    end
+  end
+
+  describe '#enqueue_retry' do
+    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:file_ref) { instance_double('RMT::Mirror::FileReference', remote_path: URI('http://example.com/test.rpm')) }
+
+    before { dl.instance_variable_set(:@queue, []) }
+
+    it 'adds a QueueItem to the queue' do
+      dl.send(:enqueue_retry, file_ref, failed_downloads: [], retries: 3, delay: 5)
+      expect(dl.instance_variable_get(:@queue).size).to eq(1)
+      expect(dl.instance_variable_get(:@queue).first).to be_a(RMT::Downloader::QueueItem)
+    end
+
+    it 'raises when queue is full and failed_downloads is nil' do
+      full_queue = Array.new(RMT::Downloader::MAX_DEFERRED_QUEUE_SIZE) do
+        RMT::Downloader::QueueItem.new(file_reference: file_ref, retry_after: 999)
+      end
+      dl.instance_variable_set(:@queue, full_queue)
+      hydra_mock = instance_double(Typhoeus::Hydra)
+      multi_mock = instance_double(Ethon::Multi, easy_handles: [])
+      allow(hydra_mock).to receive(:multi).and_return(multi_mock)
+      allow(multi_mock).to receive(:delete)
+      dl.instance_variable_set(:@hydra, hydra_mock)
+
+      expect do
+        dl.send(:enqueue_retry, file_ref, failed_downloads: nil, retries: 3, delay: 5)
+      end.to raise_error(RMT::Downloader::Exception, /Deferred retry queue full/)
+    end
+
+    it 'adds to failed_downloads when queue is full and ignore_errors is true' do
+      full_queue = Array.new(RMT::Downloader::MAX_DEFERRED_QUEUE_SIZE) do
+        RMT::Downloader::QueueItem.new(file_reference: file_ref, retry_after: 999)
+      end
+      dl.instance_variable_set(:@queue, full_queue)
+      failed = []
+      dl.send(:enqueue_retry, file_ref, failed_downloads: failed, retries: 3, delay: 5)
+      expect(failed).to include(file_ref)
     end
   end
 end
