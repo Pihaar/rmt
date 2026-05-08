@@ -336,7 +336,7 @@ class RMT::Downloader
     # compare Content-Length with local file size as a lightweight freshness check.
     # This avoids re-downloading unchanged files from servers without Last-Modified.
     content_length = response.headers['Content-Length']
-    if content_length && content_length.to_s.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
+    if content_length&.to_s&.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
       @logger.debug('  (no Last-Modified header, using Content-Length comparison)')
       return File.size(file.cache_path) == content_length.to_i
     end
