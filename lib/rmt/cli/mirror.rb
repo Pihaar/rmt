@@ -174,7 +174,7 @@ class RMT::CLI::Mirror < RMT::CLI::Base
     true
   end
 
-  def mirror_repositories!(repos) # rubocop:disable Metrics/PerceivedComplexity
+  def mirror_repositories!(repos) # rubocop:disable Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity
     downloaded_files_count = 0
     downloaded_files_size = 0
 
@@ -203,7 +203,7 @@ class RMT::CLI::Mirror < RMT::CLI::Base
       repo.refresh_timestamp!
       duration = (Time.current - mirror_start).round(1)
       if files_count && files_count > 0
-        file_word = files_count == 1 ? 'file' : 'files'
+        file_word = (files_count == 1) ? 'file' : 'files'
         logger.info(_("Completed '%{repo_name}' (ID: %{repo_id}) in %{duration}s, %{files_count} %{file_word}") % {
           repo_name: repo.name, repo_id: repo.friendly_id, duration: duration, files_count: files_count, file_word: file_word
         })

@@ -116,7 +116,7 @@ class RMT::Downloader
           else
             # empty queue when raising, so the downloader can get re-used
             dropped = @queue.count(&:retry_after)
-            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0 # rubocop:disable Metrics/BlockNesting
+            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0 
             @queue = []
             @hydra.multi.easy_handles.to_a.each do |handle|
               @hydra.multi.delete(handle)
@@ -228,7 +228,7 @@ class RMT::Downloader
     header = response.headers&.[]('Retry-After')
     return nil unless header
 
-    seconds = Integer(header) rescue nil
+    seconds = Integer(header, exception: false)
     unless seconds
       sanitized = header.to_s.gsub(/[^[:print:]]/, '?')[0..30]
       @logger.debug("Retry-After header '#{sanitized}' is not an integer, ignoring")
@@ -255,7 +255,7 @@ class RMT::Downloader
     request.receive_body
   end
 
-  def try_copying_from_cache(files, ignore_errors: false) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+  def try_copying_from_cache(files, ignore_errors: false)
     # We need to verify if the cached copy is still relevant
     # Create a HTTP/HTTPS HEAD request if possible, return nil if not
     cache_requests = files.index_with { |file| cache_head_request(file) }
@@ -338,7 +338,7 @@ class RMT::Downloader
     # Fallback: use Content-Length comparison when Last-Modified is unavailable.
     # This avoids re-downloading unchanged files from servers without Last-Modified.
     content_length = response.headers['Content-Length']
-    if content_length && content_length.to_s.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
+    if content_length&.to_s&.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
       @logger.debug('  (no Last-Modified header, using Content-Length comparison)')
       return File.size(file.cache_path) == content_length.to_i
     end

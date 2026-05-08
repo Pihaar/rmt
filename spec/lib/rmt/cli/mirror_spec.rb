@@ -403,7 +403,7 @@ RSpec.describe RMT::CLI::Mirror do
   describe '#log_mirror_config' do
     it 'logs the effective mirror configuration' do
       instance = described_class.new
-      allow(instance).to receive(:logger).and_return(RMT::Logger.new('/dev/null'))
+      allow(instance).to receive(:logger).and_return(RMT::Logger.new(File::NULL))
       allow(instance).to receive(:log_mirror_config).and_call_original
       expect { instance.send(:log_mirror_config) }.not_to raise_error
     end

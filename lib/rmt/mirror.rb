@@ -39,7 +39,7 @@ class RMT::Mirror
     end
   end
 
-  def repository_type
+  def repository_type # rubocop:disable Metrics/CyclomaticComplexity
     cached = repository.mirroring_type&.downcase&.to_sym
     if cached.present? && VALID_MIRROR_TYPES.exclude?(cached)
       sanitized_type = repository.mirroring_type.to_s.gsub(/[^[:print:]]/, '?')[0..15]
