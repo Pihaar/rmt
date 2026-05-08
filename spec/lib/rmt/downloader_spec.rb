@@ -8,7 +8,7 @@ RSpec.describe RMT::Downloader do
   let(:headers) { { 'User-Agent' => "RMT/#{RMT::VERSION}" } }
   let(:track_files) { false }
   let(:downloader) do
-    described_class.new(logger: RMT::Logger.new('/dev/null'),
+    described_class.new(logger: RMT::Logger.new(File::NULL),
                         track_files: track_files)
   end
 
@@ -61,7 +61,7 @@ RSpec.describe RMT::Downloader do
 
       it 'raises an exception' do
         # Use max_retries: 0 to avoid queue-based retry (requires real Hydra event loop)
-        dl = described_class.new(logger: RMT::Logger.new('/dev/null'),
+        dl = described_class.new(logger: RMT::Logger.new(File::NULL),
                                  track_files: track_files, max_retries: 0)
 
         allow_any_instance_of(RMT::FiberRequest).to receive(:receive_headers)
@@ -182,7 +182,7 @@ RSpec.describe RMT::Downloader do
     context 'with auth_token' do
       let(:downloader) do
         described_class.new(
-          logger: RMT::Logger.new('/dev/null'),
+          logger: RMT::Logger.new(File::NULL),
           auth_token: 'repo_auth_token'
         )
       end
@@ -324,7 +324,7 @@ RSpec.describe RMT::Downloader do
     let(:repository_dir) { Dir.mktmpdir }
     let(:repository_url_local_path) { File.expand_path(file_fixture('dummy_repo/')) + '/' }
     let(:repository_url) { URI.join('file://', repository_url_local_path) }
-    let(:downloader) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:downloader) { described_class.new(logger: RMT::Logger.new(File::NULL)) }
     let(:repomd_xml_file) do
       RMT::Mirror::FileReference.new(
         relative_path: 'repodata/repomd.xml',
@@ -440,7 +440,7 @@ RSpec.describe RMT::Downloader do
       it 'cleans up the queue of downloads' do
         # Use a downloader with concurrency 1 to test queue cleanup deterministically
         low_concurrency_dl = described_class.new(
-          logger: RMT::Logger.new('/dev/null'),
+          logger: RMT::Logger.new(File::NULL),
           track_files: track_files, concurrency: 1
         )
 
@@ -546,7 +546,7 @@ RSpec.describe RMT::Downloader do
               .to_return({ status: 500, body: 'error' }, { status: 200, body: body, headers: {} })
           end
 
-          dl = described_class.new(logger: RMT::Logger.new('/dev/null'),
+          dl = described_class.new(logger: RMT::Logger.new(File::NULL),
                                    track_files: false, max_retries: 2, retry_delay: 0)
           dl.download_multi(queue.dup, ignore_errors: true)
           queue.each do |file|
@@ -569,7 +569,7 @@ RSpec.describe RMT::Downloader do
         end
 
         it 'handles 429 and retries after delay' do
-          dl = described_class.new(logger: RMT::Logger.new('/dev/null'),
+          dl = described_class.new(logger: RMT::Logger.new(File::NULL),
                                    track_files: false, max_retries: 2, retry_delay: 1)
           dl.download_multi(queue.dup, ignore_errors: true)
           queue.each do |file|
@@ -581,7 +581,7 @@ RSpec.describe RMT::Downloader do
   end
 
   describe '#wait_for_deferred' do
-    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), track_files: false, retry_delay: 2) }
+    let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL), track_files: false, retry_delay: 2) }
 
     before do
       allow_any_instance_of(RMT::Logger).to receive(:debug)
@@ -672,7 +672,7 @@ RSpec.describe RMT::Downloader do
   end
 
   describe '#compute_delay' do
-    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 2, max_retries: 4, exponential_backoff: false) }
+    let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL), retry_delay: 2, max_retries: 4, exponential_backoff: false) }
 
     context 'when exponential_backoff is false' do
       it 'returns flat retry_delay regardless of remaining retries' do
@@ -682,7 +682,7 @@ RSpec.describe RMT::Downloader do
     end
 
     context 'when exponential_backoff is true' do
-      let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 2, max_retries: 4, exponential_backoff: true) }
+      let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL), retry_delay: 2, max_retries: 4, exponential_backoff: true) }
 
       it 'returns increasing delays with jitter' do
         delays = (1..4).map { |remaining| dl.send(:compute_delay, remaining) }
@@ -691,7 +691,7 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'caps at MAX_BACKOFF' do
-        big_dl = described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 120, max_retries: 20, exponential_backoff: true)
+        big_dl = described_class.new(logger: RMT::Logger.new(File::NULL), retry_delay: 120, max_retries: 20, exponential_backoff: true)
         delay = big_dl.send(:compute_delay, 1)
         expect(delay).to be <= RMT::Downloader::MAX_BACKOFF
       end
@@ -699,7 +699,7 @@ RSpec.describe RMT::Downloader do
   end
 
   describe '#parse_retry_after' do
-    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL)) }
 
     it 'returns nil for nil response' do
       expect(dl.send(:parse_retry_after, nil)).to be_nil
@@ -737,7 +737,7 @@ RSpec.describe RMT::Downloader do
   end
 
   describe '#valid_cached_file? Content-Length fallback' do
-    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL)) }
     let(:file) do
       instance_double(
         'RMT::Mirror::FileReference',
@@ -789,12 +789,12 @@ RSpec.describe RMT::Downloader do
 
   describe 'constructor kwargs' do
     it 'accepts concurrency as constructor argument' do
-      dl = described_class.new(logger: RMT::Logger.new('/dev/null'), concurrency: 8)
+      dl = described_class.new(logger: RMT::Logger.new(File::NULL), concurrency: 8)
       expect(dl.concurrency).to eq(8)
     end
 
     it 'uses config defaults when no arguments provided' do
-      dl = described_class.new(logger: RMT::Logger.new('/dev/null'))
+      dl = described_class.new(logger: RMT::Logger.new(File::NULL))
       expect(dl.concurrency).to eq(RMT::Config.download_concurrency)
       expect(dl.head_concurrency).to eq(RMT::Config.head_concurrency)
       expect(dl.max_retries).to eq(RMT::Config.retry_count)
@@ -802,19 +802,18 @@ RSpec.describe RMT::Downloader do
     end
 
     it 'does not allow post-construction mutation of concurrency' do
-      dl = described_class.new(logger: RMT::Logger.new('/dev/null'))
+      dl = described_class.new(logger: RMT::Logger.new(File::NULL))
       expect { dl.concurrency = 8 }.to raise_error(NoMethodError)
     end
   end
 
   describe '#handle_rate_limit' do
-    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null'), max_retries: 4, retry_delay: 1) }
+    let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL), max_retries: 4, retry_delay: 1) }
     let(:file_ref) { instance_double('RMT::Mirror::FileReference', local_path: '/tmp/test.rpm', remote_path: URI('http://example.com/test.rpm')) }
     let(:exception) { RMT::Downloader::Exception.new('rate limited') }
 
     before do
-      allow(exception).to receive(:http_code).and_return(429)
-      allow(exception).to receive(:response).and_return(nil)
+      allow(exception).to receive_messages(http_code: 429, response: nil)
       dl.instance_variable_set(:@rate_limit_retries, {})
       dl.instance_variable_set(:@queue, [])
       dl.instance_variable_set(:@hydra, instance_double(Typhoeus::Hydra))
@@ -848,7 +847,7 @@ RSpec.describe RMT::Downloader do
   end
 
   describe '#enqueue_retry' do
-    let(:dl) { described_class.new(logger: RMT::Logger.new('/dev/null')) }
+    let(:dl) { described_class.new(logger: RMT::Logger.new(File::NULL)) }
     let(:file_ref) { instance_double('RMT::Mirror::FileReference', remote_path: URI('http://example.com/test.rpm')) }
 
     before { dl.instance_variable_set(:@queue, []) }
