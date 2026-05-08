@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_24_100333) do
   create_table "activations", charset: "utf8mb3", collation: "utf8mb3_general_ci", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "service_id", null: false
@@ -114,6 +114,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
     t.datetime "last_mirrored_at"
     t.string "local_path", limit: 512, null: false
     t.boolean "mirroring_enabled", default: false, null: false
+    t.string "mirroring_type", limit: 16
     t.string "name", null: false
     t.bigint "scc_id", unsigned: true
     t.index ["external_url"], name: "index_repositories_on_external_url", unique: true
