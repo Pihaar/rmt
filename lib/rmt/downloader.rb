@@ -116,7 +116,7 @@ class RMT::Downloader
           else
             # empty queue when raising, so the downloader can get re-used
             dropped = @queue.count(&:retry_after)
-            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0 
+            @logger.warn("Aborting: dropping #{dropped} deferred retry items") if dropped > 0
             @queue = []
             @hydra.multi.easy_handles.to_a.each do |handle|
               @hydra.multi.delete(handle)
@@ -255,7 +255,7 @@ class RMT::Downloader
     request.receive_body
   end
 
-  def try_copying_from_cache(files, ignore_errors: false)
+  def try_copying_from_cache(files, ignore_errors: false) # rubocop:disable Metrics/PerceivedComplexity
     # We need to verify if the cached copy is still relevant
     # Create a HTTP/HTTPS HEAD request if possible, return nil if not
     cache_requests = files.index_with { |file| cache_head_request(file) }

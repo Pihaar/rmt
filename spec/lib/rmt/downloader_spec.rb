@@ -450,7 +450,8 @@ RSpec.describe RMT::Downloader do
               status: 404,
               body: lambda do |_|
                 hydra = low_concurrency_dl.instance_variable_get(:@hydra)
-                hydra&.multi&.easy_handles&.<<(Ethon::Easy.new(url: 'www.example.com'))
+                multi = hydra&.multi
+                multi&.easy_handles&.<<(Ethon::Easy.new(url: 'www.example.com'))
                 'dummy'
               end,
               headers: {}
