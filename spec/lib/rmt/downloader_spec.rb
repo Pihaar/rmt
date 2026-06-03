@@ -744,6 +744,7 @@ RSpec.describe RMT::Downloader do
       instance_double(
         'RMT::Mirror::FileReference',
         remote_path: URI('http://example.com/test.rpm'),
+        local_path: '/tmp/test.rpm',
         cache_path: '/tmp/test.rpm',
         cache_timestamp: Time.utc(2026, 1, 1)
       )
@@ -756,7 +757,7 @@ RSpec.describe RMT::Downloader do
       end
     end
 
-    context 'when Last-Modified is absent but Content-Length matches' do
+    context 'when Last-Modified is absent but Content-Length matches (RPM file)' do
       it 'returns true' do
         allow(File).to receive(:exist?).with('/tmp/test.rpm').and_return(true)
         allow(File).to receive(:size).with('/tmp/test.rpm').and_return(1234)
@@ -785,6 +786,43 @@ RSpec.describe RMT::Downloader do
       it 'returns false' do
         response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => 'abc' })
         expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+
+    context 'when file is metadata (.xml/.asc/.key) the fallback is skipped' do
+      let(:file) do
+        instance_double(
+          'RMT::Mirror::FileReference',
+          remote_path: URI('http://example.com/repodata/repomd.xml.asc'),
+          local_path: '/tmp/repomd.xml.asc',
+          cache_path: '/tmp/repomd.xml.asc',
+          cache_timestamp: nil
+        )
+      end
+
+      it 'returns false even when Content-Length matches (avoids re-sign mismatch)' do
+        # Same length, different content (re-signed) — must NOT use cache
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => '827' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be false
+      end
+    end
+
+    context 'when file is .drpm the fallback is applied' do
+      let(:file) do
+        instance_double(
+          'RMT::Mirror::FileReference',
+          remote_path: URI('http://example.com/delta.drpm'),
+          local_path: '/tmp/delta.drpm',
+          cache_path: '/tmp/delta.drpm',
+          cache_timestamp: nil
+        )
+      end
+
+      it 'returns true when Content-Length matches' do
+        allow(File).to receive(:exist?).with('/tmp/delta.drpm').and_return(true)
+        allow(File).to receive(:size).with('/tmp/delta.drpm').and_return(5000)
+        response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => '5000' })
+        expect(dl.send(:valid_cached_file?, file, response)).to be true
       end
     end
   end
