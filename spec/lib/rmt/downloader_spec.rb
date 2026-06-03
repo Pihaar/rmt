@@ -801,7 +801,7 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'returns false even when Content-Length matches (avoids re-sign mismatch)' do
-        # Same length, different content (re-signed) — must NOT use cache
+        # Same length, different content (re-signed) -- must NOT use cache
         response = instance_double('Typhoeus::Response', code: 200, return_code: :ok, headers: { 'Content-Length' => '827' })
         expect(dl.send(:valid_cached_file?, file, response)).to be false
       end
