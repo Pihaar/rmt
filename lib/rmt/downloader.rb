@@ -334,9 +334,16 @@ class RMT::Downloader
 
     # Fallback: if server does not send Last-Modified (e.g., openSUSE MirrorBrain),
     # compare Content-Length with local file size as a lightweight freshness check.
-    # This avoids re-downloading unchanged files from servers without Last-Modified.
+    # This avoids re-downloading unchanged RPM packages from servers without Last-Modified.
+    #
+    # IMPORTANT: only apply this fallback for package files (.rpm/.drpm). Metadata files
+    # (repomd.xml, repomd.xml.asc, repomd.xml.key) can be re-signed upstream with identical
+    # byte length but different content, which would cause stale .asc files to be paired
+    # with a newer .xml — breaking GPG signature verification.
     content_length = response.headers['Content-Length']
-    if content_length&.to_s&.match?(/\A\d+\z/) && file.cache_path && File.exist?(file.cache_path)
+    if content_length&.to_s&.match?(/\A\d+\z/) &&
+       file.cache_path && File.exist?(file.cache_path) &&
+       file.local_path.match?(/\.(rpm|drpm)\z/)
       @logger.debug('  (no Last-Modified header, using Content-Length comparison)')
       return File.size(file.cache_path) == content_length.to_i
     end
