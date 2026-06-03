@@ -339,7 +339,7 @@ class RMT::Downloader
     # IMPORTANT: only apply this fallback for package files (.rpm/.drpm). Metadata files
     # (repomd.xml, repomd.xml.asc, repomd.xml.key) can be re-signed upstream with identical
     # byte length but different content, which would cause stale .asc files to be paired
-    # with a newer .xml — breaking GPG signature verification.
+    # with a newer .xml -- breaking GPG signature verification.
     content_length = response.headers['Content-Length']
     if content_length&.to_s&.match?(/\A\d+\z/) &&
        file.cache_path && File.exist?(file.cache_path) &&
