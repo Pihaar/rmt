@@ -68,3 +68,4 @@ ansible/tmp/
 ansible/*.swp
 ansible/*~
 .ansible
+.serena/
