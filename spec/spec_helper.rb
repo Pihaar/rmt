@@ -26,6 +26,16 @@ unless ENV['NO_COVERAGE']
         cover('engines/**/*.rb')
       end
     end
+
+    # TEMP DIAGNOSTIC: list uncovered lines of downloader.rb to the console
+    SimpleCov.at_exit do
+      result = SimpleCov.result
+      file = result.files.find { |f| f.filename.end_with?('lib/rmt/downloader.rb') }
+      if file && file.covered_percent < 100
+        warn "UNCOVERED downloader.rb lines: #{file.missed_lines.map(&:line_number).inspect}"
+      end
+      result.format!
+    end
   end
 end
 
