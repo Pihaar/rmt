@@ -26,11 +26,13 @@ Dir[Rails.root.join('spec', 'support', '**', '*.rb')].each { |f| require f }
 # If you are not using ActiveRecord, you can remove this line.
 ActiveRecord::Migration.maintain_test_schema!
 
-# Speed up tests by shorten wait time to retry failed downloads
-RMT::Downloader.send(:remove_const, :RETRY_DELAY_SECONDS)
-RMT::Downloader.const_set(:RETRY_DELAY_SECONDS, 0.1)
-
+# Speed up tests by shortening the retry delay for failed downloads.
+# retry_delay is now config-driven (RMT::Config.retry_delay); stub it globally to 0.
 RSpec.configure do |config|
+  config.before do
+    allow(RMT::Config).to receive(:retry_delay).and_return(0)
+  end
+
   # Remove this line if you're not using ActiveRecord or ActiveRecord fixtures
   config.fixture_paths = ["#{::Rails.root}/spec/fixtures"]
 
