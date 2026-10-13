@@ -1085,4 +1085,35 @@ RSpec.describe RMT::Downloader do
       expect(downloader).to have_received(:enqueue_next)
     end
   end
+
+  describe '#valid_cached_file? Content-Length fallback' do
+    before { stub_logger(:debug) }
+
+    let(:rpm_file) do
+      RMT::Mirror::FileReference.new(
+        relative_path: 'pkg.rpm', base_url: repository_url,
+        base_dir: repository_dir, cache_dir: repository_dir
+      )
+    end
+
+    it 'treats the cache as valid when Content-Length matches the local .rpm size' do
+      File.write(rpm_file.cache_path, 'rpmdata')
+      response = instance_double(Typhoeus::Response, code: 200, return_code: :ok,
+                                 headers: { 'Content-Length' => File.size(rpm_file.cache_path).to_s })
+      expect(downloader.send(:valid_cached_file?, rpm_file, response)).to be true
+    end
+
+    it 'treats the cache as stale when Content-Length does not match' do
+      File.write(rpm_file.cache_path, 'rpmdata')
+      response = instance_double(Typhoeus::Response, code: 200, return_code: :ok,
+                                 headers: { 'Content-Length' => '999999' })
+      expect(downloader.send(:valid_cached_file?, rpm_file, response)).to be false
+    end
+
+    it 'treats the cache as stale when neither Last-Modified nor Content-Length is present' do
+      File.write(rpm_file.cache_path, 'rpmdata')
+      response = instance_double(Typhoeus::Response, code: 200, return_code: :ok, headers: {})
+      expect(downloader.send(:valid_cached_file?, rpm_file, response)).to be false
+    end
+  end
 end
