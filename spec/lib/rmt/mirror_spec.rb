@@ -120,6 +120,40 @@ RSpec.describe RMT::Mirror do
         expect { mirror.repository_type }.to raise_error(RMT::Mirror::Exception, /Request timed out/)
       end
     end
+
+    context 'with a cached mirroring_type' do
+      let(:logger) { RMT::Logger.new(File::NULL) }
+      let(:mirror) do
+        described_class.new(repository: repository, mirroring_base_dir: mirroring_base_dir,
+                            logger: logger, mirror_sources: false, is_airgapped: false)
+      end
+
+      it 'returns the cached type without making a HEAD request when it is valid' do
+        repository.update!(mirroring_type: 'repomd')
+        expect(RMT::HttpRequest).not_to receive(:new)
+        expect(mirror.repository_type).to eq(:repomd)
+      end
+
+      it 're-detects and warns when the cached type is invalid' do
+        repository.update_column(:mirroring_type, 'bogus')
+        stub_request(:head, repomd_url).to_return(status: 200, body: '', headers: {})
+        expect(logger).to receive(:warn).with(/Invalid cached mirroring_type/)
+        expect(mirror.repository_type).to eq(:repomd)
+      end
+
+      it 'caches the detected type on the persisted repository' do
+        stub_request(:head, repomd_url).to_return(status: 200, body: '', headers: {})
+        mirror.repository_type
+        expect(repository.reload.mirroring_type).to eq('repomd')
+      end
+
+      it 'warns but does not raise if caching the detected type fails' do
+        stub_request(:head, repomd_url).to_return(status: 200, body: '', headers: {})
+        allow(repository).to receive(:update!).and_raise(ActiveRecord::RecordInvalid.new(repository))
+        expect(logger).to receive(:warn).with(/Failed to cache mirroring_type/)
+        expect(mirror.repository_type).to eq(:repomd)
+      end
+    end
   end
 
   describe '#mirror_now' do
