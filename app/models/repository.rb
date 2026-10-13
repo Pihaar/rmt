@@ -1,9 +1,15 @@
 class Repository < ApplicationRecord
 
+  VALID_MIRRORING_TYPES = %w[repomd debian].freeze
+
   has_many :repositories_services_associations
   has_many :services, through: :repositories_services_associations
   has_many :systems, through: :services
   has_many :products, -> { distinct }, through: :services
+
+  validates :mirroring_type, inclusion: { in: VALID_MIRRORING_TYPES, allow_nil: true }
+
+  before_update :clear_mirroring_type_cache, if: :external_url_changed?
 
   scope :only_installer_updates, -> { where(installer_updates: true) }
   scope :only_mirroring_enabled, -> { where(mirroring_enabled: true) }
@@ -77,5 +83,11 @@ class Repository < ApplicationRecord
       host = host.downcase
       uri_host == host || uri_host.end_with?(".#{host}")
     end
+  end
+
+  private
+
+  def clear_mirroring_type_cache
+    self.mirroring_type = nil
   end
 end
