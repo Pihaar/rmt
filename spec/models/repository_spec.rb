@@ -262,4 +262,35 @@ RSpec.describe Repository, type: :model do
       end
     end
   end
+
+  describe 'mirroring_type' do
+    subject(:repository) { create(:repository, external_url: 'http://example.com/repo/') }
+
+    it 'accepts a valid mirroring_type' do
+      repository.mirroring_type = 'repomd'
+      expect(repository).to be_valid
+    end
+
+    it 'rejects an invalid mirroring_type' do
+      repository.mirroring_type = 'bogus'
+      expect(repository).not_to be_valid
+    end
+
+    it 'allows a nil mirroring_type' do
+      repository.mirroring_type = nil
+      expect(repository).to be_valid
+    end
+
+    it 'clears the cached mirroring_type when the external_url changes' do
+      repository.update!(mirroring_type: 'repomd')
+      repository.update!(external_url: 'http://example.com/other/')
+      expect(repository.reload.mirroring_type).to be_nil
+    end
+
+    it 'keeps the mirroring_type when the external_url is unchanged' do
+      repository.update!(mirroring_type: 'repomd')
+      repository.update!(name: 'renamed')
+      expect(repository.reload.mirroring_type).to eq('repomd')
+    end
+  end
 end

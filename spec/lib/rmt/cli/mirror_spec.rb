@@ -120,12 +120,14 @@ RSpec.describe RMT::CLI::Mirror do
         command
 
         $stdout.rewind
+        output = $stdout.read
 
-        expect($stdout.gets).to match(/Total mirrored repositories: 2/)
-        expect($stdout.gets).to match(/Total transferred files: 2/)
-        expect($stdout.gets).to match(/Total transferred file size: 92 GB/)
-        expect($stdout.gets).to match(/Total Mirror Time: 00:00:00/)
-        expect($stdout.gets).to match(/Mirroring complete./)
+        # per-repo 'Completed ...' lines may precede the summary; assert on the summary block
+        expect(output).to match(/Total mirrored repositories: 2/)
+        expect(output).to match(/Total transferred files: 2/)
+        expect(output).to match(/Total transferred file size: 92 GB/)
+        expect(output).to match(/Total Mirror Time: 00:00:00/)
+        expect(output).to match(/Mirroring complete./)
       end
 
       context 'failed repository mirroring' do
