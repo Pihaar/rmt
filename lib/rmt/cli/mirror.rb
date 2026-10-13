@@ -124,8 +124,10 @@ class RMT::CLI::Mirror < RMT::CLI::Base
   end
 
   # NOTE: only log non-sensitive config keys here.
+  # Logged at debug level so it doesn't interleave with the user-facing INFO
+  # summary lines (the CLI logger writes INFO+ to stdout).
   def log_mirror_config
-    logger.info(
+    logger.debug(
       format(
         'Mirror config: download_concurrency=%<dc>s, head_concurrency=%<hc>s, ' \
           'retry_count=%<rc>s, retry_delay=%<rd>s, exponential_backoff=%<eb>s, ' \
