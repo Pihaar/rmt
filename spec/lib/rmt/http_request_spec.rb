@@ -33,6 +33,24 @@ RSpec.describe RMT::HttpRequest do
     its([:low_speed_time]) { is_expected.to eq(42) }
   end
 
+  describe 'HEAD request options' do
+    subject(:options) { described_class.new('http://example.com', method: :head).options }
+
+    before do
+      Settings.http_client.low_speed_limit = 1337
+      Settings.http_client.low_speed_time = 42
+    end
+
+    it 'uses shorter connect and total timeouts' do
+      expect(options[:connecttimeout]).to eq(5)
+      expect(options[:timeout]).to eq(30)
+    end
+
+    it 'drops the low_speed options that are meaningless for HEAD' do
+      expect(options).not_to include(:low_speed_limit, :low_speed_time)
+    end
+  end
+
   describe 'when request is too slow' do
     let(:port) { 55555 }
     let(:server_thread) do
