@@ -1035,4 +1035,54 @@ RSpec.describe RMT::Downloader do
       expect(File.read(cached.local_path)).to eq('fresh')
     end
   end
+
+  describe '#handle_rate_limit (unit)' do
+    let(:file) do
+      RMT::Mirror::FileReference.new(
+        relative_path: 'test.rpm', base_url: repository_url, base_dir: repository_dir, cache_dir: nil
+      )
+    end
+    let(:response) { instance_double(Typhoeus::Response, code: 429, headers: retry_after_headers) }
+    let(:retry_after_headers) { { 'Retry-After' => '7' } }
+    let(:error) { RMT::Downloader::Exception.new('rate limited', response: response) }
+
+    before do
+      stub_logger(:warn, :debug)
+      downloader.instance_variable_set(:@rate_limit_retries, {})
+      allow(downloader).to receive(:sleep)
+    end
+
+    it 'waits the Retry-After seconds and re-queues within budget' do
+      allow(downloader).to receive(:queue_download)
+      downloader.send(:handle_rate_limit, file, 4, error)
+      expect(downloader).to have_received(:sleep).with(7)
+      expect(downloader).to have_received(:queue_download).with(file, retries: 4)
+    end
+
+    it 'falls back to the computed/min delay when no usable Retry-After header is present' do
+      allow(response).to receive(:headers).and_return({})
+      allow(downloader).to receive(:queue_download)
+      downloader.send(:handle_rate_limit, file, 4, error)
+      # computed = retry_delay(0 in tests) * 2^1 = 0 -> max(0, MIN_RATE_LIMIT_DELAY) = 30
+      expect(downloader).to have_received(:sleep).with(RMT::Downloader::MIN_RATE_LIMIT_DELAY)
+    end
+
+    it 'raises when the budget is exhausted and not ignoring errors' do
+      downloader.instance_variable_set(:@failed_downloads, nil)
+      downloader.instance_variable_set(:@rate_limit_retries, { file.local_path => RMT::Downloader::MAX_429_RETRIES - 1 })
+      allow(downloader).to receive(:abort_queue)
+      expect { downloader.send(:handle_rate_limit, file, 4, error) }.to raise_error(error)
+      expect(downloader).to have_received(:abort_queue)
+    end
+
+    it 'records the file and continues when the budget is exhausted and ignoring errors' do
+      failed = []
+      downloader.instance_variable_set(:@failed_downloads, failed)
+      downloader.instance_variable_set(:@rate_limit_retries, { file.local_path => RMT::Downloader::MAX_429_RETRIES - 1 })
+      allow(downloader).to receive(:enqueue_next)
+      downloader.send(:handle_rate_limit, file, 4, error)
+      expect(failed).to eq([file])
+      expect(downloader).to have_received(:enqueue_next)
+    end
+  end
 end
