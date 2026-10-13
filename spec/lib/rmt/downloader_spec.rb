@@ -446,12 +446,12 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'cleans up easy handles on error' do
+        single = described_class.new(logger: RMT::Logger.new('/dev/null'), track_files: track_files, concurrency: 1)
         expect do
-          downloader.concurrency = 1
-          downloader.download_multi(queue.dup, ignore_errors: false)
+          single.download_multi(queue.dup, ignore_errors: false)
         end.to raise_error("http://example.com/package1 - request failed with HTTP status code 404, return code ''")
 
-        expect(downloader.instance_variable_get(:@hydra).multi.easy_handles).to eq([])
+        expect(single.instance_variable_get(:@hydra).multi.easy_handles).to eq([])
       end
 
       it 'deletes easy handles during error cleanup' do
@@ -722,7 +722,7 @@ RSpec.describe RMT::Downloader do
 
 
       it 'adds the file to failed_downloads and downloads the rest when ignore_errors is true' do
-        stub_const('RMT::Downloader::RETRY_DELAY_SECONDS', 0)
+        fast = described_class.new(logger: RMT::Logger.new('/dev/null'), track_files: track_files, retry_delay: 0)
         stub_logger(:warn, :info, :debug)
 
         stub_request(:get, 'http://example.com/test.rpm')
@@ -732,7 +732,7 @@ RSpec.describe RMT::Downloader do
           .with(headers: headers)
           .to_return(status: 200, body: 'good content', headers: {})
 
-        expect(downloader.download_multi([file, good_file], ignore_errors: true)).to eq([file])
+        expect(fast.download_multi([file, good_file], ignore_errors: true)).to eq([file])
         expect(File.read(good_file.local_path)).to eq('good content')
       end
     end
@@ -899,6 +899,138 @@ RSpec.describe RMT::Downloader do
         expect { downloader.send(:raise_request_error, 'http://example.com/test.rpm', response) }
           .to raise_error(RMT::Downloader::Exception, /test\.rpm - request failed with HTTP status code 503/)
       end
+    end
+  end
+
+  describe '#parse_retry_after' do
+    before { stub_logger(:debug) }
+
+    it 'returns nil when response is nil' do
+      expect(downloader.send(:parse_retry_after, nil)).to be_nil
+    end
+
+    it 'returns nil when the Retry-After header is absent' do
+      response = instance_double(Typhoeus::Response, headers: {})
+      expect(downloader.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns the integer seconds for a valid header' do
+      response = instance_double(Typhoeus::Response, headers: { 'Retry-After' => '30' })
+      expect(downloader.send(:parse_retry_after, response)).to eq(30)
+    end
+
+    it 'returns nil for a non-integer (HTTP-date) header' do
+      response = instance_double(Typhoeus::Response, headers: { 'Retry-After' => 'Wed, 21 Oct 2026 07:28:00 GMT' })
+      expect(downloader.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for a value above MAX_BACKOFF' do
+      response = instance_double(Typhoeus::Response, headers: { 'Retry-After' => '9999' })
+      expect(downloader.send(:parse_retry_after, response)).to be_nil
+    end
+
+    it 'returns nil for a zero/negative value' do
+      response = instance_double(Typhoeus::Response, headers: { 'Retry-After' => '0' })
+      expect(downloader.send(:parse_retry_after, response)).to be_nil
+    end
+  end
+
+  describe '#compute_delay' do
+    context 'when exponential_backoff is disabled' do
+      let(:downloader) do
+        described_class.new(logger: RMT::Logger.new('/dev/null'), retry_delay: 7, exponential_backoff: false)
+      end
+
+      it 'returns the flat retry_delay' do
+        expect(downloader.send(:compute_delay, 4)).to eq(7)
+      end
+    end
+
+    context 'when exponential_backoff is enabled' do
+      let(:downloader) do
+        described_class.new(logger: RMT::Logger.new('/dev/null'),
+                            retry_delay: 2, max_retries: 4, exponential_backoff: true)
+      end
+
+      it 'returns a jittered value within 1..(retry_delay * 2^attempt)' do
+        # attempt = max_retries(4) - remaining(2) = 2 -> cap = 2 * 2^2 = 8
+        expect(downloader.send(:compute_delay, 2)).to be_between(1, 8)
+      end
+
+      it 'caps the delay at MAX_BACKOFF' do
+        # a very low remaining count drives a huge 2^attempt, which must be capped
+        allow(downloader).to receive(:rand) { |range| range.max }
+        expect(downloader.send(:compute_delay, 0)).to eq(RMT::Downloader::MAX_BACKOFF)
+      end
+    end
+  end
+
+  describe '429 rate-limit handling' do
+    let(:file) do
+      RMT::Mirror::FileReference.new(
+        relative_path: 'test.rpm',
+        base_url: repository_url,
+        base_dir: repository_dir,
+        cache_dir: nil
+      ).tap do |f|
+        f.checksum = Digest::SHA256.hexdigest('ok content')
+        f.checksum_type = 'SHA256'
+      end
+    end
+
+    before do
+      stub_logger(:warn, :info, :debug)
+      allow(downloader).to receive(:sleep)
+    end
+
+    it 'honors the Retry-After header and retries until success' do
+      stub_request(:get, 'http://example.com/test.rpm')
+        .with(headers: headers)
+        .to_return(status: 429, headers: { 'Retry-After' => '1' }).times(2)
+      stub_request(:get, 'http://example.com/test.rpm')
+        .with(headers: headers)
+        .to_return(status: 200, body: 'ok content', headers: {})
+
+      downloader.download_multi([file])
+
+      expect(downloader).to have_received(:sleep).with(1).twice
+      expect(File.read(file.local_path)).to eq('ok content')
+    end
+
+    it 'raises after the 429 budget is exhausted (ignore_errors: false)' do
+      stub_request(:get, 'http://example.com/test.rpm')
+        .with(headers: headers)
+        .to_return(status: 429, headers: {})
+
+      expect { downloader.download_multi([file]) }.to raise_error(RMT::Downloader::Exception)
+    end
+
+    it 'records the file in failed_downloads when the 429 budget is exhausted (ignore_errors: true)' do
+      stub_request(:get, 'http://example.com/test.rpm')
+        .with(headers: headers)
+        .to_return(status: 429, headers: {})
+
+      expect(downloader.download_multi([file], ignore_errors: true)).to eq([file])
+    end
+
+    it 'skips the cache and treats files as uncached when rate limited during HEAD validation' do
+      cached = RMT::Mirror::FileReference.new(
+        relative_path: 'test.rpm', base_url: repository_url,
+        base_dir: repository_dir, cache_dir: Dir.mktmpdir
+      ).tap do |f|
+        f.checksum = Digest::SHA256.hexdigest('fresh')
+        f.checksum_type = 'SHA256'
+      end
+      File.write(cached.cache_path, 'stale')
+
+      stub_request(:head, 'http://example.com/test.rpm').to_return(status: 429, headers: {})
+      stub_request(:get, 'http://example.com/test.rpm')
+        .to_return(status: 200, body: 'fresh', headers: {})
+
+      downloader.download_multi([cached])
+
+      expect(a_request(:get, 'http://example.com/test.rpm')).to have_been_made
+      expect(File.read(cached.local_path)).to eq('fresh')
     end
   end
 end
