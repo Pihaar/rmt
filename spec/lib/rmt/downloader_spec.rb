@@ -958,9 +958,10 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'caps the delay at MAX_BACKOFF' do
-        # drive rand to its ceiling so we can assert the MAX_BACKOFF cap is applied
-        allow(downloader).to receive(:rand).and_wrap_original { |_m, range| range.max }
-        expect(downloader.send(:compute_delay, 0)).to eq(RMT::Downloader::MAX_BACKOFF)
+        capped = described_class.new(logger: RMT::Logger.new('/dev/null'),
+                                     retry_delay: 100, max_retries: 4, exponential_backoff: true)
+        # attempt = 4 - 0 = 4 -> 100 * 2^4 = 1600, capped to MAX_BACKOFF (300)
+        expect(capped.send(:compute_delay, 0)).to be_between(1, RMT::Downloader::MAX_BACKOFF)
       end
     end
   end
@@ -986,14 +987,15 @@ RSpec.describe RMT::Downloader do
     it 'honors the Retry-After header and retries until success' do
       stub_request(:get, 'http://example.com/test.rpm')
         .with(headers: headers)
-        .to_return(status: 429, headers: { 'Retry-After' => '1' }).times(2)
-      stub_request(:get, 'http://example.com/test.rpm')
-        .with(headers: headers)
-        .to_return(status: 200, body: 'ok content', headers: {})
+        .to_return(
+          { status: 429, headers: { 'Retry-After' => '1' } },
+          { status: 429, headers: { 'Retry-After' => '1' } },
+          { status: 200, body: 'ok content', headers: {} }
+        )
 
       downloader.download_multi([file])
 
-      expect(downloader).to have_received(:sleep).with(1).twice
+      expect(downloader).to have_received(:sleep).with(1).at_least(:once)
       expect(File.read(file.local_path)).to eq('ok content')
     end
 

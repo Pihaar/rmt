@@ -22,6 +22,10 @@ RSpec.describe RMT::CLI::Mirror do
 
     allow(RMT::Mirror).to receive(:new).and_return(mirror)
     allow(mirror).to receive(:mirror_now)
+
+    # The perf patch adds a 'Mirror config: ...' log line at the start of each
+    # mirror run; silence it so it does not shift the line-based stdout assertions.
+    allow_any_instance_of(described_class).to receive(:log_mirror_config)
   end
 
   describe '#all' do
@@ -390,6 +394,45 @@ RSpec.describe RMT::CLI::Mirror do
           expect { command }.to output(error_log).to_stdout
         end
       end
+    end
+  end
+
+  describe '#log_mirror_config' do
+    it 'logs the effective mirror configuration without raising' do
+      instance = described_class.new
+      allow(instance).to receive(:logger).and_return(RMT::Logger.new(File::NULL))
+      allow(instance).to receive(:log_mirror_config).and_call_original
+      expect { instance.send(:log_mirror_config) }.not_to raise_error
+    end
+  end
+
+  describe '#mirror_repositories! completion logging' do
+    let!(:repository) { create :repository, :with_products, mirroring_enabled: true }
+    let(:argv) { ['repository', repository.friendly_id] }
+
+    before do
+      allow(RMT::Mirror).to receive(:new).and_return(mirror)
+      allow_any_instance_of(described_class).to receive(:log_mirror_config)
+    end
+
+    it 'logs completion with file count when files were transferred' do
+      allow(mirror).to receive(:mirror_now).and_return([5, 1024])
+      $stdout = StringIO.new
+      command rescue nil
+      $stdout.rewind
+      output = $stdout.read
+      $stdout = STDOUT
+      expect(output).to include("Completed '#{repository.name}'", '5 files')
+    end
+
+    it 'logs up to date when no files were transferred' do
+      allow(mirror).to receive(:mirror_now).and_return([0, 0])
+      $stdout = StringIO.new
+      command rescue nil
+      $stdout.rewind
+      output = $stdout.read
+      $stdout = STDOUT
+      expect(output).to include("Completed '#{repository.name}'", 'up to date')
     end
   end
 end
