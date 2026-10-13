@@ -31,6 +31,10 @@ ActiveRecord::Migration.maintain_test_schema!
 RSpec.configure do |config|
   config.before do
     allow(RMT::Config).to receive(:retry_delay).and_return(0)
+    # The perf patch logs a 'Mirror config: ...' line at the start of every mirror
+    # run. Silence it globally so it doesn't shift the line-based stdout assertions
+    # in the CLI mirror specs. Covered explicitly in mirror_spec #log_mirror_config.
+    allow_any_instance_of(RMT::CLI::Mirror).to receive(:log_mirror_config)
   end
 
   # Remove this line if you're not using ActiveRecord or ActiveRecord fixtures
