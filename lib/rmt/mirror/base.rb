@@ -42,7 +42,7 @@ class RMT::Mirror::Base
 
   BATCH_QUERY_SIZE = 500 # MySQL max_prepared_stmt params=65535, SQLite SQLITE_MAX_VARIABLE_NUMBER=999
   VALID_CHECKSUM_TYPES = %w[SHA256 SHA512 SHA1 MD5].freeze
-  CHECKSUM_HEX_PATTERN = /\A[a-f0-9]+\z/i.freeze
+  CHECKSUM_HEX_PATTERN = /\A[a-f0-9]+\z/i
   CHECKSUM_LENGTHS = { 'SHA256' => 64, 'SHA512' => 128, 'SHA1' => 40, 'MD5' => 32 }.freeze
 
   def file_reference(relative, to:)

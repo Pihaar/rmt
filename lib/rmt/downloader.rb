@@ -185,7 +185,7 @@ class RMT::Downloader
     header = response.headers&.[]('Retry-After')
     return nil unless header
 
-    seconds = Integer(header) rescue nil
+    seconds = Integer(header, exception: false)
     unless seconds
       sanitized = header.to_s.gsub(/[^[:print:]]/, '?')[0..30]
       @logger.debug("Retry-After header '#{sanitized}' is not an integer, ignoring")

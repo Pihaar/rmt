@@ -52,15 +52,15 @@ module RMT::Config # rubocop:disable Metrics/ModuleLength
     # Pin the revalidation decision at mirror start to avoid mid-run changes at midnight.
     # Call pin_revalidation! at the beginning of a mirror run, unpin_revalidation! at the end.
     def pin_revalidation!
-      @pinned_revalidate_repodata = revalidate_repodata? # rubocop:disable ThreadSafety/InstanceVariableInClassMethod
+      @pinned_revalidate_repodata = revalidate_repodata? # rubocop:disable ThreadSafety/ClassInstanceVariable
     end
 
     def unpin_revalidation!
-      @pinned_revalidate_repodata = nil # rubocop:disable ThreadSafety/InstanceVariableInClassMethod
+      @pinned_revalidate_repodata = nil # rubocop:disable ThreadSafety/ClassInstanceVariable
     end
 
     def revalidate_repodata_pinned?
-      return @pinned_revalidate_repodata unless @pinned_revalidate_repodata.nil? # rubocop:disable ThreadSafety/InstanceVariableInClassMethod
+      return @pinned_revalidate_repodata unless @pinned_revalidate_repodata.nil? # rubocop:disable ThreadSafety/ClassInstanceVariable
 
       revalidate_repodata?
     end

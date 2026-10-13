@@ -958,8 +958,8 @@ RSpec.describe RMT::Downloader do
       end
 
       it 'caps the delay at MAX_BACKOFF' do
-        # a very low remaining count drives a huge 2^attempt, which must be capped
-        allow(downloader).to receive(:rand) { |range| range.max }
+        # drive rand to its ceiling so we can assert the MAX_BACKOFF cap is applied
+        allow(downloader).to receive(:rand).and_wrap_original { |_m, range| range.max }
         expect(downloader.send(:compute_delay, 0)).to eq(RMT::Downloader::MAX_BACKOFF)
       end
     end
