@@ -306,18 +306,25 @@ RSpec.describe RMT::Config do
 
     context 'default when unset' do
       before { Settings['mirroring'].download_concurrency = nil }
-      it('returns 4 and does not warn') do
+      it('returns 4') { expect(described_class.download_concurrency).to eq(4) }
+      it('does not warn') do
         expect(Rails.logger).not_to receive(:warn)
-        expect(described_class.download_concurrency).to eq(4)
+        described_class.download_concurrency
       end
     end
 
     context 'out of range or non-numeric' do
       [0, 33, -1, 'abc'].each do |input|
-        before { Settings['mirroring'].download_concurrency = input }
-        it("falls back to 4 and warns for #{input.inspect}") do
-          expect(Rails.logger).to receive(:warn).with(/download_concurrency=#{Regexp.escape(input.to_s)} is outside valid range \(1\.\.32\)/)
-          expect(described_class.download_concurrency).to eq(4)
+        context "with #{input.inspect}" do
+          before { Settings['mirroring'].download_concurrency = input }
+          it('falls back to 4') do
+            allow(Rails.logger).to receive(:warn)
+            expect(described_class.download_concurrency).to eq(4)
+          end
+          it('warns about the invalid range') do
+            expect(Rails.logger).to receive(:warn).with(/download_concurrency=#{Regexp.escape(input.to_s)} is outside valid range \(1\.\.32\)/)
+            described_class.download_concurrency
+          end
         end
       end
     end
@@ -336,9 +343,13 @@ RSpec.describe RMT::Config do
 
     context 'out of range' do
       before { Settings['mirroring'].head_concurrency = 99 }
-      it('falls back to 4 and warns') do
-        expect(Rails.logger).to receive(:warn).with(/head_concurrency=99 is outside valid range \(1\.\.32\)/)
+      it('falls back to 4') do
+        allow(Rails.logger).to receive(:warn)
         expect(described_class.head_concurrency).to eq(4)
+      end
+      it('warns about the invalid range') do
+        expect(Rails.logger).to receive(:warn).with(/head_concurrency=99 is outside valid range \(1\.\.32\)/)
+        described_class.head_concurrency
       end
     end
   end
@@ -358,17 +369,22 @@ RSpec.describe RMT::Config do
 
     context 'out of range' do
       [-1, 21].each do |input|
-        before { Settings['mirroring'].retry_count = input }
-        it("falls back to 4 and warns for #{input}") do
-          expect(Rails.logger).to receive(:warn).with(/retry_count=#{input} is outside valid range \(0\.\.20\)/)
-          expect(described_class.retry_count).to eq(4)
+        context "with #{input}" do
+          before { Settings['mirroring'].retry_count = input }
+          it('falls back to 4') do
+            allow(Rails.logger).to receive(:warn)
+            expect(described_class.retry_count).to eq(4)
+          end
+          it('warns about the invalid range') do
+            expect(Rails.logger).to receive(:warn).with(/retry_count=#{input} is outside valid range \(0\.\.20\)/)
+            described_class.retry_count
+          end
         end
       end
     end
   end
 
   describe '.retry_delay' do
-    # rails_helper stubs retry_delay globally to 0; call_original here to test the real method.
     before { allow(described_class).to receive(:retry_delay).and_call_original }
 
     context 'valid value' do
@@ -383,10 +399,16 @@ RSpec.describe RMT::Config do
 
     context 'out of range' do
       [0, 121].each do |input|
-        before { Settings['mirroring'].retry_delay = input }
-        it("falls back to 2 and warns for #{input}") do
-          expect(Rails.logger).to receive(:warn).with(/retry_delay=#{input} is outside valid range \(1\.\.120\)/)
-          expect(described_class.retry_delay).to eq(2)
+        context "with #{input}" do
+          before { Settings['mirroring'].retry_delay = input }
+          it('falls back to 2') do
+            allow(Rails.logger).to receive(:warn)
+            expect(described_class.retry_delay).to eq(2)
+          end
+          it('warns about the invalid range') do
+            expect(Rails.logger).to receive(:warn).with(/retry_delay=#{input} is outside valid range \(1\.\.120\)/)
+            described_class.retry_delay
+          end
         end
       end
     end
@@ -395,9 +417,10 @@ RSpec.describe RMT::Config do
   describe '.exponential_backoff?' do
     context 'default when unset' do
       before { Settings['mirroring'].exponential_backoff = nil }
-      it('returns false and does not warn') do
+      it('returns false') { expect(described_class.exponential_backoff?).to be(false) }
+      it('does not warn') do
         expect(Rails.logger).not_to receive(:warn)
-        expect(described_class.exponential_backoff?).to be(false)
+        described_class.exponential_backoff?
       end
     end
 
@@ -422,17 +445,20 @@ RSpec.describe RMT::Config do
       end
     end
 
-    context 'empty string coerces to nil and warns' do
+    context 'empty string coerces to nil' do
       before { Settings['mirroring'].exponential_backoff = '' }
-      it('warns and defaults to false') do
-        expect(Rails.logger).to receive(:warn).with(/exponential_backoff= is not a valid boolean/)
+      it('defaults to false') do
+        allow(Rails.logger).to receive(:warn)
         expect(described_class.exponential_backoff?).to be(false)
+      end
+      it('warns about the invalid boolean') do
+        expect(Rails.logger).to receive(:warn).with(/exponential_backoff= is not a valid boolean/)
+        described_class.exponential_backoff?
       end
     end
   end
 
   describe '.full_revalidation_day_today?' do
-    # Fix "today" to a Wednesday (wday=3) for deterministic assertions.
     before { allow(Time).to receive(:now).and_return(Time.utc(2026, 10, 14, 12, 0, 0)) }
 
     context 'unset' do
@@ -514,22 +540,23 @@ RSpec.describe RMT::Config do
   end
 
   describe 'revalidation pinning' do
-    before { allow(Time).to receive(:now).and_return(Time.utc(2026, 10, 14, 12, 0, 0)) } # Wednesday
+    before { allow(Time).to receive(:now).and_return(Time.utc(2026, 10, 14, 12, 0, 0)) }
 
     after { described_class.unpin_revalidation! }
 
-    context 'pinned value is returned regardless of later config changes' do
+    context 'pinned false, day later flips to a forced full-revalidation day' do
       before do
         Settings['mirroring'].full_revalidation_day = nil
         Settings['mirroring'].revalidate_repodata = false
         described_class.pin_revalidation!
+        Settings['mirroring'].full_revalidation_day = 'wednesday'
       end
 
-      it('returns the pinned false even if the day flips to a forced day mid-run') do
-        expect(described_class.revalidate_repodata_pinned?).to be_falsey
-        # Simulate midnight rollover into the forced full-revalidation day.
-        Settings['mirroring'].full_revalidation_day = 'wednesday'
+      it('live revalidate_repodata? reflects the forced day') do
         expect(described_class.revalidate_repodata?).to be_truthy
+      end
+
+      it('pinned value stays false despite the rollover') do
         expect(described_class.revalidate_repodata_pinned?).to be_falsey
       end
     end
@@ -553,8 +580,11 @@ RSpec.describe RMT::Config do
         described_class.pin_revalidation!
       end
 
-      it('returns true, then nil after unpin falls through to live value') do
+      it('returns true while pinned') do
         expect(described_class.revalidate_repodata_pinned?).to be_truthy
+      end
+
+      it('falls through to the live false value after unpin') do
         described_class.unpin_revalidation!
         Settings['mirroring'].revalidate_repodata = false
         expect(described_class.revalidate_repodata_pinned?).to be_falsey
