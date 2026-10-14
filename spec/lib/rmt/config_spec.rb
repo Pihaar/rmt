@@ -295,4 +295,263 @@ RSpec.describe RMT::Config do
       end
     end
   end
+
+  describe '.download_concurrency' do
+    context 'valid values' do
+      { 1 => 1, 10 => 10, 32 => 32, '8' => 8 }.each do |input, expected|
+        before { Settings['mirroring'].download_concurrency = input }
+        it("returns #{expected} for #{input.inspect}") { expect(described_class.download_concurrency).to eq(expected) }
+      end
+    end
+
+    context 'default when unset' do
+      before { Settings['mirroring'].download_concurrency = nil }
+      it('returns 4 and does not warn') do
+        expect(Rails.logger).not_to receive(:warn)
+        expect(described_class.download_concurrency).to eq(4)
+      end
+    end
+
+    context 'out of range or non-numeric' do
+      [0, 33, -1, 'abc', 1.5].each do |input|
+        before { Settings['mirroring'].download_concurrency = input }
+        it("falls back to 4 and warns for #{input.inspect}") do
+          expect(Rails.logger).to receive(:warn).with(/download_concurrency=#{Regexp.escape(input.to_s)} is outside valid range \(1\.\.32\)/)
+          expect(described_class.download_concurrency).to eq(4)
+        end
+      end
+    end
+  end
+
+  describe '.head_concurrency' do
+    context 'valid value' do
+      before { Settings['mirroring'].head_concurrency = 16 }
+      it('returns the configured value') { expect(described_class.head_concurrency).to eq(16) }
+    end
+
+    context 'default when unset' do
+      before { Settings['mirroring'].head_concurrency = nil }
+      it('returns 4') { expect(described_class.head_concurrency).to eq(4) }
+    end
+
+    context 'out of range' do
+      before { Settings['mirroring'].head_concurrency = 99 }
+      it('falls back to 4 and warns') do
+        expect(Rails.logger).to receive(:warn).with(/head_concurrency=99 is outside valid range \(1\.\.32\)/)
+        expect(described_class.head_concurrency).to eq(4)
+      end
+    end
+  end
+
+  describe '.retry_count' do
+    context 'valid values including zero (min is 0)' do
+      { 0 => 0, 4 => 4, 20 => 20 }.each do |input, expected|
+        before { Settings['mirroring'].retry_count = input }
+        it("returns #{expected} for #{input}") { expect(described_class.retry_count).to eq(expected) }
+      end
+    end
+
+    context 'default when unset' do
+      before { Settings['mirroring'].retry_count = nil }
+      it('returns 4') { expect(described_class.retry_count).to eq(4) }
+    end
+
+    context 'out of range' do
+      [-1, 21].each do |input|
+        before { Settings['mirroring'].retry_count = input }
+        it("falls back to 4 and warns for #{input}") do
+          expect(Rails.logger).to receive(:warn).with(/retry_count=#{input} is outside valid range \(0\.\.20\)/)
+          expect(described_class.retry_count).to eq(4)
+        end
+      end
+    end
+  end
+
+  describe '.retry_delay' do
+    # rails_helper stubs retry_delay globally to 0; call_original here to test the real method.
+    before { allow(described_class).to receive(:retry_delay).and_call_original }
+
+    context 'valid value' do
+      before { Settings['mirroring'].retry_delay = 30 }
+      it('returns the configured value') { expect(described_class.retry_delay).to eq(30) }
+    end
+
+    context 'default when unset' do
+      before { Settings['mirroring'].retry_delay = nil }
+      it('returns 2') { expect(described_class.retry_delay).to eq(2) }
+    end
+
+    context 'out of range' do
+      [0, 121].each do |input|
+        before { Settings['mirroring'].retry_delay = input }
+        it("falls back to 2 and warns for #{input}") do
+          expect(Rails.logger).to receive(:warn).with(/retry_delay=#{input} is outside valid range \(1\.\.120\)/)
+          expect(described_class.retry_delay).to eq(2)
+        end
+      end
+    end
+  end
+
+  describe '.exponential_backoff?' do
+    context 'default when unset' do
+      before { Settings['mirroring'].exponential_backoff = nil }
+      it('returns false and does not warn') do
+        expect(Rails.logger).not_to receive(:warn)
+        expect(described_class.exponential_backoff?).to be(false)
+      end
+    end
+
+    context 'truthy' do
+      [true, 'true'].each do |input|
+        before { Settings['mirroring'].exponential_backoff = input }
+        it("returns true for #{input.inspect}") { expect(described_class.exponential_backoff?).to be(true) }
+      end
+    end
+
+    context 'falsey' do
+      [false, 'false'].each do |input|
+        before { Settings['mirroring'].exponential_backoff = input }
+        it("returns false for #{input.inspect}") { expect(described_class.exponential_backoff?).to be(false) }
+      end
+    end
+
+    context 'invalid non-boolean string' do
+      before { Settings['mirroring'].exponential_backoff = 'maybe' }
+      it('warns and defaults to false') do
+        expect(Rails.logger).to receive(:warn).with(/exponential_backoff=maybe is not a valid boolean/)
+        expect(described_class.exponential_backoff?).to be(false)
+      end
+    end
+  end
+
+  describe '.full_revalidation_day_today?' do
+    # Fix "today" to a Wednesday (wday=3) for deterministic assertions.
+    before { allow(Time).to receive(:now).and_return(Time.utc(2026, 10, 14, 12, 0, 0)) }
+
+    context 'unset' do
+      before { Settings['mirroring'].full_revalidation_day = nil }
+      it('returns false') { expect(described_class.full_revalidation_day_today?).to be(false) }
+    end
+
+    context 'scalar day name matching today' do
+      before { Settings['mirroring'].full_revalidation_day = 'wednesday' }
+      it('returns true (case-insensitive)') { expect(described_class.full_revalidation_day_today?).to be(true) }
+    end
+
+    context 'scalar day name not matching today' do
+      before { Settings['mirroring'].full_revalidation_day = 'saturday' }
+      it('returns false') { expect(described_class.full_revalidation_day_today?).to be(false) }
+    end
+
+    context 'scalar integer matching today (wday)' do
+      before { Settings['mirroring'].full_revalidation_day = 3 }
+      it('returns true') { expect(described_class.full_revalidation_day_today?).to be(true) }
+    end
+
+    context 'numeric string matching today' do
+      before { Settings['mirroring'].full_revalidation_day = '3' }
+      it('returns true') { expect(described_class.full_revalidation_day_today?).to be(true) }
+    end
+
+    context 'array containing today' do
+      before { Settings['mirroring'].full_revalidation_day = %w[saturday wednesday] }
+      it('returns true') { expect(described_class.full_revalidation_day_today?).to be(true) }
+    end
+
+    context 'array not containing today' do
+      before { Settings['mirroring'].full_revalidation_day = %w[saturday sunday] }
+      it('returns false') { expect(described_class.full_revalidation_day_today?).to be(false) }
+    end
+
+    context 'invalid day name' do
+      before { Settings['mirroring'].full_revalidation_day = 'notaday' }
+      it('returns false (nil index guarded)') { expect(described_class.full_revalidation_day_today?).to be(false) }
+    end
+
+    context 'out-of-range integer' do
+      before { Settings['mirroring'].full_revalidation_day = 9 }
+      it('returns false') { expect(described_class.full_revalidation_day_today?).to be(false) }
+    end
+
+    context 'YAML array loaded as Config::Options (respond_to?(:values) branch)' do
+      let!(:tmp_dir) { Dir.mktmpdir('rmt') }
+      let(:config_path) { File.join(tmp_dir, 'rmt.yml') }
+
+      around do |example|
+        File.open(config_path, 'w') do |f|
+          f.puts <<~CONFIG.chomp
+          mirroring:
+            full_revalidation_day:
+              - saturday
+              - wednesday
+          CONFIG
+        end
+        Settings.reload_from_files(config_path)
+        example.run
+        Settings.reload_from_files(Rails.root.join('config/rmt.yml'))
+        FileUtils.remove_entry(tmp_dir, force: true)
+      end
+
+      it('extracts values from the hash-like object and matches today') do
+        expect(described_class.full_revalidation_day_today?).to be(true)
+      end
+    end
+
+    context 'forces revalidate_repodata? to true even when configured false' do
+      before do
+        Settings['mirroring'].full_revalidation_day = 'wednesday'
+        Settings['mirroring'].revalidate_repodata = false
+      end
+      it('revalidate_repodata? is true on the forced day') { expect(described_class.revalidate_repodata?).to be_truthy }
+    end
+  end
+
+  describe 'revalidation pinning' do
+    before { allow(Time).to receive(:now).and_return(Time.utc(2026, 10, 14, 12, 0, 0)) } # Wednesday
+
+    after { described_class.unpin_revalidation! }
+
+    context 'pinned value is returned regardless of later config changes' do
+      before do
+        Settings['mirroring'].full_revalidation_day = nil
+        Settings['mirroring'].revalidate_repodata = false
+        described_class.pin_revalidation!
+      end
+
+      it('returns the pinned false even if the day flips to a forced day mid-run') do
+        expect(described_class.revalidate_repodata_pinned?).to be_falsey
+        # Simulate midnight rollover into the forced full-revalidation day.
+        Settings['mirroring'].full_revalidation_day = 'wednesday'
+        expect(described_class.revalidate_repodata?).to be_truthy
+        expect(described_class.revalidate_repodata_pinned?).to be_falsey
+      end
+    end
+
+    context 'when not pinned' do
+      before do
+        described_class.unpin_revalidation!
+        Settings['mirroring'].full_revalidation_day = nil
+        Settings['mirroring'].revalidate_repodata = false
+      end
+
+      it('falls through to the live revalidate_repodata?') do
+        expect(described_class.revalidate_repodata_pinned?).to be_falsey
+      end
+    end
+
+    context 'pins a true decision' do
+      before do
+        Settings['mirroring'].full_revalidation_day = nil
+        Settings['mirroring'].revalidate_repodata = true
+        described_class.pin_revalidation!
+      end
+
+      it('returns true, then nil after unpin falls through to live value') do
+        expect(described_class.revalidate_repodata_pinned?).to be_truthy
+        described_class.unpin_revalidation!
+        Settings['mirroring'].revalidate_repodata = false
+        expect(described_class.revalidate_repodata_pinned?).to be_falsey
+      end
+    end
+  end
 end
