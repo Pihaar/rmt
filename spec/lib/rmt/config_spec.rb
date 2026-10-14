@@ -307,6 +307,7 @@ RSpec.describe RMT::Config do
     context 'default when unset' do
       before { Settings['mirroring'].download_concurrency = nil }
       it('returns 4') { expect(described_class.download_concurrency).to eq(4) }
+
       it('does not warn') do
         expect(Rails.logger).not_to receive(:warn)
         described_class.download_concurrency
@@ -321,6 +322,7 @@ RSpec.describe RMT::Config do
             allow(Rails.logger).to receive(:warn)
             expect(described_class.download_concurrency).to eq(4)
           end
+
           it('warns about the invalid range') do
             expect(Rails.logger).to receive(:warn).with(/download_concurrency=#{Regexp.escape(input.to_s)} is outside valid range \(1\.\.32\)/)
             described_class.download_concurrency
@@ -347,6 +349,7 @@ RSpec.describe RMT::Config do
         allow(Rails.logger).to receive(:warn)
         expect(described_class.head_concurrency).to eq(4)
       end
+
       it('warns about the invalid range') do
         expect(Rails.logger).to receive(:warn).with(/head_concurrency=99 is outside valid range \(1\.\.32\)/)
         described_class.head_concurrency
@@ -375,6 +378,7 @@ RSpec.describe RMT::Config do
             allow(Rails.logger).to receive(:warn)
             expect(described_class.retry_count).to eq(4)
           end
+
           it('warns about the invalid range') do
             expect(Rails.logger).to receive(:warn).with(/retry_count=#{input} is outside valid range \(0\.\.20\)/)
             described_class.retry_count
@@ -405,6 +409,7 @@ RSpec.describe RMT::Config do
             allow(Rails.logger).to receive(:warn)
             expect(described_class.retry_delay).to eq(2)
           end
+
           it('warns about the invalid range') do
             expect(Rails.logger).to receive(:warn).with(/retry_delay=#{input} is outside valid range \(1\.\.120\)/)
             described_class.retry_delay
@@ -418,6 +423,7 @@ RSpec.describe RMT::Config do
     context 'default when unset' do
       before { Settings['mirroring'].exponential_backoff = nil }
       it('returns false') { expect(described_class.exponential_backoff?).to be(false) }
+
       it('does not warn') do
         expect(Rails.logger).not_to receive(:warn)
         described_class.exponential_backoff?
@@ -451,6 +457,7 @@ RSpec.describe RMT::Config do
         allow(Rails.logger).to receive(:warn)
         expect(described_class.exponential_backoff?).to be(false)
       end
+
       it('warns about the invalid boolean') do
         expect(Rails.logger).to receive(:warn).with(/exponential_backoff= is not a valid boolean/)
         described_class.exponential_backoff?
