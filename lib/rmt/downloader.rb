@@ -134,7 +134,7 @@ class RMT::Downloader
   # Terminal handling for a download that will not be retried: in ignore_errors==false
   # mode (@failed_downloads is nil) abort the whole queue and raise; otherwise record the
   # file as failed and continue with the next download. An optional block runs only on the
-  # record path (so a per-file "× failed" log is not emitted before an abort/raise).
+  # record path (so a per-file failure log is not emitted before an abort/raise).
   def give_up_on_download(file, error)
     if @failed_downloads.nil?
       abort_queue

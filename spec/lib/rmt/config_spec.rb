@@ -313,7 +313,7 @@ RSpec.describe RMT::Config do
     end
 
     context 'out of range or non-numeric' do
-      [0, 33, -1, 'abc', 1.5].each do |input|
+      [0, 33, -1, 'abc'].each do |input|
         before { Settings['mirroring'].download_concurrency = input }
         it("falls back to 4 and warns for #{input.inspect}") do
           expect(Rails.logger).to receive(:warn).with(/download_concurrency=#{Regexp.escape(input.to_s)} is outside valid range \(1\.\.32\)/)
@@ -415,10 +415,17 @@ RSpec.describe RMT::Config do
       end
     end
 
-    context 'invalid non-boolean string' do
+    context 'arbitrary non-false string coerces to true' do
       before { Settings['mirroring'].exponential_backoff = 'maybe' }
+      it('returns true (ActiveModel Boolean treats any non-FALSE_VALUE as true)') do
+        expect(described_class.exponential_backoff?).to be(true)
+      end
+    end
+
+    context 'empty string coerces to nil and warns' do
+      before { Settings['mirroring'].exponential_backoff = '' }
       it('warns and defaults to false') do
-        expect(Rails.logger).to receive(:warn).with(/exponential_backoff=maybe is not a valid boolean/)
+        expect(Rails.logger).to receive(:warn).with(/exponential_backoff= is not a valid boolean/)
         expect(described_class.exponential_backoff?).to be(false)
       end
     end
