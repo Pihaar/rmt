@@ -115,14 +115,8 @@ class RMT::Downloader
   # retries the file, or records/raises the failure, depending on 'ignore_errors'
   def handle_failure(file, retries, error)
     if retries.zero? || error.try(:http_code) == 404
-      # @failed_downloads is nil if running in ignore_errors==false mode
-      if @failed_downloads.nil?
-        abort_queue
-        raise error
-      else
+      give_up_on_download(file, error) do
         @logger.warn("× #{File.basename(file.local_path)} - #{error.message}")
-        @failed_downloads << file
-        enqueue_next
       end
     elsif error.try(:http_code) == 429
       handle_rate_limit(file, retries, error)
@@ -137,6 +131,21 @@ class RMT::Downloader
     end
   end
 
+  # Terminal handling for a download that will not be retried: in ignore_errors==false
+  # mode (@failed_downloads is nil) abort the whole queue and raise; otherwise record the
+  # file as failed and continue with the next download. An optional block runs only on the
+  # record path (so a per-file "× failed" log is not emitted before an abort/raise).
+  def give_up_on_download(file, error)
+    if @failed_downloads.nil?
+      abort_queue
+      raise error
+    else
+      yield if block_given?
+      @failed_downloads << file
+      enqueue_next
+    end
+  end
+
   # 429 responses are retried on a per-file budget (MAX_429_RETRIES) independent of
   # the regular retry count, honoring the server's Retry-After header when present.
   def handle_rate_limit(file, retries, error)
@@ -148,13 +157,7 @@ class RMT::Downloader
       @logger.warn(_('Rate limit retries exhausted for %{file_reference}. Giving up.') % {
         file_reference: file.remote_path
       })
-      if @failed_downloads.nil?
-        abort_queue
-        raise error
-      else
-        @failed_downloads << file
-        enqueue_next
-      end
+      give_up_on_download(file, error)
     else
       computed = @retry_delay * (2**attempt)
       delay = parse_retry_after(error.response) || [computed, MIN_RATE_LIMIT_DELAY].max
