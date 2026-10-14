@@ -299,8 +299,10 @@ RSpec.describe RMT::Config do
   describe '.download_concurrency' do
     context 'valid values' do
       { 1 => 1, 10 => 10, 32 => 32, '8' => 8 }.each do |input, expected|
-        before { Settings['mirroring'].download_concurrency = input }
-        it("returns #{expected} for #{input.inspect}") { expect(described_class.download_concurrency).to eq(expected) }
+        it("returns #{expected} for #{input.inspect}") do
+          Settings['mirroring'].download_concurrency = input
+          expect(described_class.download_concurrency).to eq(expected)
+        end
       end
     end
 
@@ -360,8 +362,10 @@ RSpec.describe RMT::Config do
   describe '.retry_count' do
     context 'valid values including zero (min is 0)' do
       { 0 => 0, 4 => 4, 20 => 20 }.each do |input, expected|
-        before { Settings['mirroring'].retry_count = input }
-        it("returns #{expected} for #{input}") { expect(described_class.retry_count).to eq(expected) }
+        it("returns #{expected} for #{input}") do
+          Settings['mirroring'].retry_count = input
+          expect(described_class.retry_count).to eq(expected)
+        end
       end
     end
 
