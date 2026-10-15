@@ -278,7 +278,7 @@ RSpec.describe RMT::Mirror::Repomd do
 
       # Download repomd.xml file
       allow(downloader).to receive(:download_multi).once
-        .with([have_attributes(relative_path: repomd_xml)]) do
+        .with([have_attributes(relative_path: repomd_xml)], retries: RMT::Mirror::Base::METADATA_RETRIES) do
           mirror_fixtures(repomd_xml, from: fixture_dir, to: repository_tmp_dir)
         end
 
@@ -287,7 +287,7 @@ RSpec.describe RMT::Mirror::Repomd do
         .with(match_array([
           have_attributes(relative_path: 'repodata/repomd.xml.asc'),
           have_attributes(relative_path: 'repodata/repomd.xml.key')
-        ]))
+        ]), retries: RMT::Mirror::Base::METADATA_RETRIES)
 
       # Verify metadata signature
       allow(gpg_verifier).to receive(:verify_signature).once
