@@ -2,10 +2,11 @@ require 'json'
 require 'net/http'
 
 ANNOUNCE_URL = 'https://scc.suse.com/connect/subscriptions/systems'.freeze
-SYSTEM_PRODUCTS_URL = 'https://scc.suse.com/connect/systems/products'.freeze
+SYSTEMS_PRODUCTS_URL = 'https://scc.suse.com/connect/systems/products'.freeze
 SYSTEMS_ACTIVATIONS_URL = 'https://scc.suse.com/connect/systems/activations'.freeze
-DEREGISTER_SYSTEM_URL = 'https://scc.suse.com/connect/systems'.freeze
+SYSTEMS_URL = 'https://scc.suse.com/connect/systems'.freeze
 DEREGISTER_PRODUCT_URL = 'https://scc.suse.com/connect/systems/products'.freeze
+
 NET_HTTP_ERRORS = [
   Errno::EINVAL,
   Errno::ECONNRESET,
@@ -96,19 +97,44 @@ module SccProxy
       scc_request
     end
 
-    def announce_system_scc(auth, params, system_token)
+    def announce_system_scc(auth, params, system_token, logger)
       uri = URI.parse(ANNOUNCE_URL)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
       scc_request = prepare_scc_announce_request(uri.path, auth, params, system_token)
       response = http.request(scc_request)
-      response.error! unless response.code_type == Net::HTTPCreated
+      begin
+        response_body = JSON.parse(response.body)
+      rescue JSON::ParserError => e
+        logger.info "Could not parse SCC response body: #{e.message}"
+        response_body = {}
+      end
+      return [response_body, response.to_hash] if response.code_type == Net::HTTPCreated
 
-      [JSON.parse(response.body), response.to_hash]
+      # if the system is in SCC it means it was created by a sibling
+      error = response_body['localized_error'] || response_body['error'] || ''
+      return [nil, nil] if error.include? 'already taken'
+
+      response.error!
+    end
+
+    def update_system_scc(auth, params, system_token, logger)
+      uri = URI.parse(SYSTEMS_URL)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      # PUT /connect/systems
+      scc_request = Net::HTTP::Put.new(uri.path, headers(auth, system_token))
+      scc_request.body = params.to_json
+      response = http.request(scc_request)
+      unless response.is_a?(Net::HTTPSuccess)
+        error = JSON.parse(response.body) rescue {}
+        logger.info "Could not update system on SCC, error: (#{response.code}) #{error['error'] || response.message}"
+        response.error!
+      end
     end
 
     def scc_activate_product(system, product, auth, params, mode)
-      uri = URI.parse(SYSTEM_PRODUCTS_URL)
+      uri = URI.parse(SYSTEMS_PRODUCTS_URL)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
       scc_request = prepare_scc_request(uri.path, product, auth, params, mode)
@@ -131,7 +157,7 @@ module SccProxy
     end
 
     def deactivate_product_scc(auth, product, params, logger)
-      uri = URI.parse(DEREGISTER_PRODUCT_URL)
+      uri = URI.parse(SYSTEMS_PRODUCTS_URL)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
       scc_request = Net::HTTP::Delete.new(uri.path, headers(auth, params))
@@ -152,7 +178,7 @@ module SccProxy
     end
 
     def deregister_system_scc(auth, system)
-      uri = URI.parse(DEREGISTER_SYSTEM_URL)
+      uri = URI.parse(SYSTEMS_URL)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
       scc_request = Net::HTTP::Delete.new(uri.path, headers(auth, system.system_token))
@@ -267,7 +293,7 @@ module SccProxy
     end
 
     def scc_upgrade(auth, product, system, logger)
-      uri = URI.parse(SYSTEM_PRODUCTS_URL)
+      uri = URI.parse(SYSTEMS_PRODUCTS_URL)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
       scc_request = prepare_scc_upgrade_request(uri.path, product, auth, system.system_token, system.proxy_byos_mode)
@@ -288,6 +314,9 @@ module SccProxy
     config.after_initialize do
       # replaces RMT registration for SCC registration
       Api::Connect::V3::Subscriptions::SystemsController.class_eval do
+        # rubocop:disable Metrics/CyclomaticComplexity
+        # rubocop:disable Metrics/PerceivedComplexity
+        # rubocop:disable Metrics/MethodLength
         def announce_system
           auth_header = request.headers.fetch('HTTP_AUTHORIZATION', nil)
           system_information = info_params(:hwinfo)[:hwinfo].to_json
@@ -311,20 +340,25 @@ module SccProxy
             process_system_profiles(system_values)
           else
             request.request_parameters['proxy_byos_mode'] = 'byos'
-            scc_response, scc_response_headers = SccProxy.announce_system_scc(auth_header, request.request_parameters, instance_identifier)
-            system_values.merge!(
-              {
-                scc_system_id: scc_response['id'],
-                password: scc_response['password'],
-                proxy_byos_mode: :byos,
-                proxy_byos: true
-              }
+            scc_response, scc_response_headers = SccProxy.announce_system_scc(
+              auth_header, request.request_parameters, instance_identifier, logger
             )
-            profile_response_header_handling(scc_response_headers)
+            system_values[:proxy_byos_mode] = :byos
+            if scc_response.present?
+              system_values[:scc_system_id] = scc_response['id']
+              system_values[:password] = scc_response['password']
+              profile_response_header_handling(scc_response_headers)
+            else
+              system_values[:password] = instance_identifier
+            end
           end
-          @system = System.create!(system_values)
-          logger.info("System '#{@system.hostname}' announced")
-          respond_with(@system, serializer: ::V3::SystemSerializer, location: nil)
+          @system, error = create_system(system_values, logger)
+          if @system.present?
+            logger.info("System '#{@system.hostname}' announced")
+            respond_with(@system, serializer: ::V3::SystemSerializer, location: nil)
+          else
+            render json: { type: 'error', error: error }, status: :unprocessable_entity, location: nil
+          end
         rescue *NET_HTTP_ERRORS => e
           message = 'Could not announce system'
           message += " with regcode #{auth_header} to SCC" unless has_no_regcode?(auth_header)
@@ -346,8 +380,32 @@ module SccProxy
           logger.error("#{message}: #{e.message}")
           render json: { type: 'error', error: e.message }, status: :unprocessable_content, location: nil
         end
+        # rubocop:enable Metrics/CyclomaticComplexity
+        # rubocop:enable Metrics/PerceivedComplexity
+        # rubocop:enable Metrics/MethodLength
 
         protected
+
+        def create_system(system_values, logger)
+          attempts = 0
+          begin
+            attempts += 1
+            [System.create!(system_values), nil]
+          rescue ActiveRecord::RecordInvalid => e
+            # The to-be-announced system is already in the database
+            # This could mean it got de-registered on another update infrastructure server a short time ago
+            # Let's wait 3*10 seconds (max regsharing time) for regsharing to catch up
+            message = "System could not be created with the following values #{system_values}: #{e.message}"
+            if attempts < 3
+              logger.info "#{message}. Attempt #{attempts} of 3\nRetrying in 10 seconds"
+              sleep 10
+              retry
+            else
+              logger.error message
+              [nil, "System could not be created: #{e.message}"]
+            end
+          end
+        end
 
         def status_code(error_message)
           error_message[0..(error_message.index(' ') - 1)].to_i
@@ -480,7 +538,8 @@ module SccProxy
             scc_response, _headers = SccProxy.announce_system_scc(
               "Token token=#{announce_params[:token]}",
               announce_params,
-              announce_params['system_token']
+              announce_params['system_token'],
+              logger
             )
             scc_response
           end
@@ -542,9 +601,23 @@ module SccProxy
       end
 
       Api::Connect::V3::Systems::SystemsController.class_eval do
+        before_action :scc_update_system, only: %i[update], if: -> { (@system.byos? || @system.hybrid?) && request.headers.key?('HTTP_AUTHORIZATION') }
         before_action :scc_deregistration, only: %i[deregister]
 
         protected
+
+        def scc_update_system
+          params[:byos_mode] = @system.proxy_byos_mode
+          SccProxy.update_system_scc(
+            request.headers.fetch('HTTP_AUTHORIZATION'),
+            params,
+            @system.system_token,
+            logger
+            )
+          logger.info("System (login: #{@system.login}) updated to SCC")
+        rescue *NET_HTTP_ERRORS
+          logger.error("Could not update system (login: #{@system.login}) on SCC")
+        end
 
         def scc_deregistration
           if @system.byos? || @system.hybrid?

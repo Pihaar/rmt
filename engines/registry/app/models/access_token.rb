@@ -5,7 +5,7 @@ require 'base32'
 class AccessToken
   def initialize(account, service, granted_scopes)
     @account = account
-    @service = service # "SUSE Linux OCI Registry"
+    @service = service
     @granted_scopes = granted_scopes
   end
 
@@ -44,6 +44,10 @@ class AccessToken
   end
 
   def private_key
+    missing_key = Rails.application.config.registry_private_key.blank? && @private_key.blank?
+
+    raise Registry::Exceptions::RegistryUnavailable.new('registry signing key is missing') if missing_key
+
     @private_key ||= Rails.application.config.registry_private_key
   end
 end

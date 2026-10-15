@@ -49,7 +49,7 @@ class RMT::Mirror::Debian < RMT::Mirror::Base
     download_enqueued(continue_on_error: true)
 
     # If revalidate_repodata is turned off, only return changed metadata files
-    if RMT::Config.revalidate_repodata?
+    if RMT::Config.revalidate_repodata_pinned?
       metadata_refs
     else
       metadata_refs.select { |m| metadata_updated?(m) }

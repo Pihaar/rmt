@@ -48,3 +48,24 @@ config/system_uuid
 
 locale/*/*.po.time_stamp
 locale/*/*.edit.po
+
+# Ansible
+ansible/*.retry
+
+# Agent/AI related files
+.agents/
+.gemini/
+.claude/
+
+ansible/.molecule/
+ansible/.cache/
+ansible/__pycache__/
+ansible/*.pyc
+ansible/.pytest_cache/
+ansible/.vagrant/
+ansible/*.log
+ansible/tmp/
+ansible/*.swp
+ansible/*~
+.ansible
+.serena/

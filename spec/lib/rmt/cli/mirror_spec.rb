@@ -120,12 +120,14 @@ RSpec.describe RMT::CLI::Mirror do
         command
 
         $stdout.rewind
+        output = $stdout.read
 
-        expect($stdout.gets).to match(/Total mirrored repositories: 2/)
-        expect($stdout.gets).to match(/Total transferred files: 2/)
-        expect($stdout.gets).to match(/Total transferred file size: 92 GB/)
-        expect($stdout.gets).to match(/Total Mirror Time: 00:00:00/)
-        expect($stdout.gets).to match(/Mirroring complete./)
+        # per-repo 'Completed ...' lines may precede the summary; assert on the summary block
+        expect(output).to match(/Total mirrored repositories: 2/)
+        expect(output).to match(/Total transferred files: 2/)
+        expect(output).to match(/Total transferred file size: 92 GB/)
+        expect(output).to match(/Total Mirror Time: 00:00:00/)
+        expect(output).to match(/Mirroring complete./)
       end
 
       context 'failed repository mirroring' do
@@ -390,6 +392,38 @@ RSpec.describe RMT::CLI::Mirror do
           expect { command }.to output(error_log).to_stdout
         end
       end
+    end
+  end
+
+  describe '#log_mirror_config' do
+    it 'logs the effective mirror configuration without raising' do
+      instance = described_class.new
+      allow(instance).to receive(:logger).and_return(RMT::Logger.new(File::NULL))
+      allow(instance).to receive(:log_mirror_config).and_call_original
+      expect { instance.send(:log_mirror_config) }.not_to raise_error
+    end
+  end
+
+  describe '#mirror_repositories! completion logging' do
+    let!(:repository) { create :repository, :with_products, mirroring_enabled: true }
+    let(:argv) { ['repository', repository.friendly_id] }
+
+    before { allow(RMT::Mirror).to receive(:new).and_return(mirror) }
+
+    it 'logs completion with file count when files were transferred' do
+      allow(mirror).to receive(:mirror_now).and_return([5, 1024])
+      $stdout = StringIO.new
+      command
+      $stdout.rewind
+      expect($stdout.read).to include("Completed '#{repository.name}'", '5 files')
+    end
+
+    it 'logs up to date when no files were transferred' do
+      allow(mirror).to receive(:mirror_now).and_return([0, 0])
+      $stdout = StringIO.new
+      command
+      $stdout.rewind
+      expect($stdout.read).to include("Completed '#{repository.name}'", 'up to date')
     end
   end
 end

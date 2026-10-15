@@ -3,11 +3,19 @@ require 'rails_helper'
 # rubocop:disable Metrics/ModuleLength
 module Registry
   describe RegistryController, type: :request do
+    let(:settings_registry) do
+      { service: 'foo', realm: 'bar' }
+    end
+    let(:registry_service) { 'SUSE Linux OCI Registry' }
+    let(:registry_realm) { 'SUSE Registry Authentication' }
+
     describe '#authenticate' do
       context 'login request with invalid credentials' do
         let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials('login', 'password') } }
 
         it 'succeeds with login + password from secrets' do
+          allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+          allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
           get('/api/registry/authorize', headers: auth_headers)
 
           expect(response).to have_http_status(:unauthorized)
@@ -19,6 +27,8 @@ module Registry
         let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials(system.login, system.password) } }
 
         it 'succeeds with login + password from secrets' do
+          allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+          allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
           allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
           get('/api/registry/authorize', headers: auth_headers)
 
@@ -31,11 +41,81 @@ module Registry
         let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials(system.login, system.password) } }
 
         it 'raises exception and returns unauth' do
+          allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+          allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
           allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
           allow(Base32).to receive(:encode).and_raise('FOO')
           get('/api/registry/authorize', headers: auth_headers)
 
           expect(response).to have_http_status(:unauthorized)
+        end
+      end
+
+      context 'login request with misconfigured registry' do
+        let(:system) { create(:system) }
+        let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials(system.login, system.password) } }
+
+        it 'refuses the request instead of raising' do
+          allow(Settings).to receive(:try).with(:registry).and_return({})
+          allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
+          allow(Rails.logger).to receive(:error)
+          get('/api/registry/authorize', headers: auth_headers)
+          expect(response).to have_http_status(:unauthorized)
+          # the detail is what the operator needs and the client must not see
+          expect(Rails.logger).to have_received(:error).with(%r{registry realm not configured properly in /etc/rmt\.conf})
+          expect(response.body).not_to include('/etc/rmt.conf')
+        end
+      end
+
+      context 'login request with a malformed scope' do
+        it 'rejects a scope that is not colon separated' do
+          get('/api/registry/authorize', params: { scope: 'foo' })
+
+          expect(response).to have_http_status(:bad_request)
+          expect(json_response[:error]).to eq('Invalid scope format')
+        end
+
+        it 'rejects a scope with too few parts' do
+          get('/api/registry/authorize', params: { scope: 'repository:name' })
+
+          expect(response).to have_http_status(:bad_request)
+          expect(json_response[:error]).to eq('Invalid scope format')
+        end
+
+        it 'rejects a scope with too many parts' do
+          get('/api/registry/authorize', params: { scope: 'a:b:c:d' })
+
+          expect(response).to have_http_status(:bad_request)
+          expect(json_response[:error]).to eq('Invalid scope format')
+        end
+
+        it 'rejects a scope with a character outside the allowed set' do
+          get('/api/registry/authorize', params: { scope: 'repository:name:pull;drop' })
+
+          expect(response).to have_http_status(:bad_request)
+          expect(json_response[:error]).to eq('Invalid scope format')
+        end
+
+        it 'never reaches the controller with invalid UTF-8' do
+          expect { get('/api/registry/authorize?scope=repository%3Aname%3A%FFpull') }.to raise_error(ActionController::BadRequest)
+        end
+      end
+
+      context 'when the registry signing key was never installed' do
+        let(:system) { create(:system) }
+        let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials(system.login, system.password) } }
+
+        it 'reports the missing key rather than a NoMethodError on String' do
+          allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+          allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
+          allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
+          allow(Rails.application.config).to receive(:registry_private_key).and_return('')
+          allow(Rails.logger).to receive(:error)
+
+          get('/api/registry/authorize', headers: auth_headers)
+
+          expect(response).to have_http_status(:unauthorized)
+          expect(Rails.logger).to have_received(:error).with(/registry signing key is missing/)
         end
       end
     end
@@ -45,18 +125,51 @@ module Registry
       let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials(system.login, system.password) } }
 
       it 'returns 401' do
+        allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+        allow(settings_registry).to receive(:try).with(:service).and_return(registry_service)
         get('/api/registry/catalog')
         expect(response).to have_http_status(:unauthorized)
         expect(response.header['WWW-Authenticate']).not_to include('error="insufficient_scope"')
       end
 
       it 'with a token that has no access to catalog' do
+        allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+        allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
+        allow(settings_registry).to receive(:try).with(:service).and_return(registry_service)
         get('/api/registry/authorize', params: { scope: '' }, headers: auth_headers)
 
         request.headers.merge({ 'HTTP_AUTHORIZATION' => "Bearer #{json_response[:token]}" })
         get('/api/registry/catalog', headers: auth_headers)
 
         expect(response.header['WWW-Authenticate']).to include('error="insufficient_scope"')
+      end
+    end
+
+    describe '#catalog with misconfigured registry' do
+      let(:system) { create(:system) }
+      let(:auth_headers) { { 'Authorization' => ActionController::HttpAuthentication::Basic.encode_credentials(system.login, system.password) } }
+
+      it 'refuse the request instead of raising' do
+        allow(Settings).to receive(:try).with(:registry).and_return({})
+        allow(Rails.logger).to receive(:error)
+        get('/api/registry/catalog')
+        expect(response).to have_http_status(:unauthorized)
+        expect(Rails.logger).to have_received(:error).with(%r{registry service not configured properly in /etc/rmt\.conf})
+        expect(response.body).not_to include('/etc/rmt.conf')
+      end
+    end
+
+    describe '#catalog when the registry signing key was never installed' do
+      it 'refuses the request instead of raising' do
+        allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+        allow(settings_registry).to receive(:try).with(:service).and_return(registry_service)
+        allow(Rails.application.config).to receive(:registry_private_key).and_return('')
+        allow(Rails.logger).to receive(:error)
+
+        get('/api/registry/catalog', headers: { 'Authorization' => 'Bearer irrelevant' })
+
+        expect(response).to have_http_status(:unauthorized)
+        expect(Rails.logger).to have_received(:error).with(/registry signing key is missing/)
       end
     end
 
@@ -94,15 +207,19 @@ module Registry
 
         context 'with a valid token' do
           it 'has catalog access' do
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
             allow(File).to receive(:read).and_return(access_policy_content)
             allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
             get(
               '/api/registry/authorize',
-              params: { service: 'SUSE Linux OCI Registry', scope: 'registry:catalog:*' },
+              params: { service: registry_service, scope: 'registry:catalog:*' },
               headers: auth_headers
               )
 
             auth_headers_token['Authorization'] = format("Bearer #{json_response[:token]}")
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:service).and_return(registry_service)
             get('/api/registry/catalog', headers: auth_headers_token)
 
             expect(response).to have_http_status(:ok)
@@ -111,9 +228,11 @@ module Registry
 
         context 'when token is invalid' do
           it 'denies the access' do
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
             get(
               '/api/registry/authorize',
-              params: { service: 'SUSE Linux OCI Registry', scope: 'registry:catalog:*' },
+              params: { service: registry_service, scope: 'registry:catalog:*' },
               headers: auth_headers
               )
 
@@ -127,6 +246,8 @@ module Registry
 
         context 'when an error happens' do
           it 'denies the access' do
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
             allow_any_instance_of(AccessScope).to receive(:allowed_paths).and_raise(RegistryAuthError, 'Foo')
             allow(File).to receive(:read).and_return(access_policy_content)
             allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
@@ -140,6 +261,90 @@ module Registry
             get('/api/registry/catalog', headers: auth_headers_token)
 
             expect(response).to have_http_status(:unauthorized)
+          end
+        end
+
+        context 'when the registry backend is unreachable' do
+          before do
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
+            allow(settings_registry).to receive(:try).with(:service).and_return(registry_service)
+            allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
+            allow(Rails.logger).to receive(:error)
+          end
+
+          it 'denies the access when the registry refuses the connection' do
+            stub_request(:get, "#{RegistryCatalogService.new.catalog_api_url}?n=1000").to_raise(Errno::ECONNREFUSED)
+
+            get(
+              '/api/registry/authorize',
+              params: { service: registry_service, scope: 'registry:catalog:*' },
+              headers: auth_headers
+              )
+
+            auth_headers_token['Authorization'] = format("Bearer #{json_response[:token]}")
+            get('/api/registry/catalog', headers: auth_headers_token)
+
+            expect(response).to have_http_status(:unauthorized)
+            expect(Rails.logger).to have_received(:error).with(/could not read the registry catalog: Errno::ECONNREFUSED/)
+          end
+
+          it 'denies the access when the registry answers with something that is not JSON' do
+            stub_request(:get, "#{RegistryCatalogService.new.catalog_api_url}?n=1000")
+              .to_return(body: '<html>502 Bad Gateway</html>', status: 200, headers: { 'Content-type' => 'text/html' })
+
+            get(
+              '/api/registry/authorize',
+              params: { service: registry_service, scope: 'registry:catalog:*' },
+              headers: auth_headers
+              )
+
+            auth_headers_token['Authorization'] = format("Bearer #{json_response[:token]}")
+            get('/api/registry/catalog', headers: auth_headers_token)
+
+            expect(response).to have_http_status(:unauthorized)
+            expect(Rails.logger).to have_received(:error).with(/could not read the registry catalog: JSON::ParserError/)
+          end
+        end
+
+        context 'when the access policy file cannot be read' do
+          before do
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
+            allow(settings_registry).to receive(:try).with(:service).and_return(registry_service)
+            allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
+            allow(Rails.logger).to receive(:error)
+          end
+
+          it 'denies the access when the file is not valid YAML' do
+            get(
+              '/api/registry/authorize',
+              params: { service: registry_service, scope: 'registry:catalog:*' },
+              headers: auth_headers
+              )
+
+            auth_headers_token['Authorization'] = format("Bearer #{json_response[:token]}")
+            # a tab cannot be used for indentation in YAML
+            allow(File).to receive(:read).and_return("policies:\n\t- unindentable")
+            get('/api/registry/catalog', headers: auth_headers_token)
+
+            expect(response).to have_http_status(:unauthorized)
+            expect(Rails.logger).to have_received(:error).with(/could not read .*: Psych::SyntaxError/)
+          end
+
+          it 'denies the access when the file is not a mapping of product classes to paths' do
+            get(
+              '/api/registry/authorize',
+              params: { service: registry_service, scope: 'registry:catalog:*' },
+              headers: auth_headers
+              )
+
+            auth_headers_token['Authorization'] = format("Bearer #{json_response[:token]}")
+            allow(File).to receive(:read).and_return("- one\n- two\n")
+            get('/api/registry/catalog', headers: auth_headers_token)
+
+            expect(response).to have_http_status(:unauthorized)
+            expect(Rails.logger).to have_received(:error).with(/is not a mapping of product classes to paths/)
           end
         end
       end
@@ -184,6 +389,8 @@ module Registry
 
         context 'with a valid token' do
           it 'can not find system' do
+            allow(Settings).to receive(:try).with(:registry).and_return(settings_registry)
+            allow(settings_registry).to receive(:try).with(:realm).and_return(registry_realm)
             allow(File).to receive(:read).and_return(access_policy_content)
             allow_any_instance_of(AuthenticatedClient).to receive(:cache_file_exist?).and_return(true)
             get(

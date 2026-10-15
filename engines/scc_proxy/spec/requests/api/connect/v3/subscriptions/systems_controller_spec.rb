@@ -54,7 +54,6 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
 
           system = System.find_by(login: 'i-12345-payg')
           expect(system.proxy_byos_mode).to eq('byos')
-          expect(system.proxy_byos).to eq(true)
           expect(system.instance_data).to eq(instance_data)
         end
 
@@ -65,7 +64,7 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
             expect(InstanceVerification::Providers::Example).to receive(:new).at_least(:once).and_return(plugin_double)
             allow(plugin_double).to receive(:instance_identifier).and_raise(InstanceVerification::Exception, 'Malformed instance data')
             post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=' }
-            expect(JSON.parse(response.body)['error']).to eq('Malformed instance data')
+            expect(response.parsed_body['error']).to eq('Malformed instance data')
             expect(response.message).to eq('Unprocessable Content')
             expect(response.code).to eq('422')
           end
@@ -84,7 +83,7 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
 
         it 'returns error' do
           post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
-          data = JSON.parse(response.body)
+          data = response.parsed_body
           expect(response.code).to eq('401')
           expect(data['type']).to eq('error')
           expect(data['error']).to include('Invalid credentials')
@@ -103,7 +102,7 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
 
         it 'returns error' do
           post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
-          data = JSON.parse(response.body)
+          data = response.parsed_body
           expect(response.code).to eq('401')
           expect(data['type']).to eq('error')
           expect(data['error']).to include('Unauthorized')
@@ -122,7 +121,7 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
 
         it 'returns error' do
           post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
-          data = JSON.parse(response.body)
+          data = response.parsed_body
           expect(data['type']).to eq('error')
           expect(data['error']).to include('Request timed out')
         end
@@ -181,26 +180,79 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
         }
       end
 
+      # rubocop:disable RSpec/NestedGroups
       context 'valid credentials' do
         let(:plugin_double) { instance_double('InstanceVerification::Providers::Example') }
 
-        before do
-          stub_request(:post, scc_register_system_url)
-            .to_return(
-              status: 201,
-              body: scc_register_response.to_s,
-              headers: {}
-            )
+        context 'system not in the db' do
+          before do
+            stub_request(:post, scc_register_system_url)
+              .to_return(
+                status: 201,
+                body: scc_register_response.to_s,
+                headers: {}
+              )
+          end
+
+          it 'saves the data' do
+            allow(InstanceVerification::Providers::Example).to receive(:new).at_least(:once).and_return(plugin_double)
+            allow(plugin_double).to receive(:instance_identifier).and_return('i-12345-payg')
+            post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
+            system = System.find_by(login: 'i-12345-payg')
+            expect(system.instance_data).to eq(instance_data)
+          end
         end
 
-        it 'saves the data' do
-          allow(InstanceVerification::Providers::Example).to receive(:new).at_least(:once).and_return(plugin_double)
-          allow(plugin_double).to receive(:instance_identifier).and_return('i-12345-payg')
-          post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
-          system = System.find_by(login: 'i-12345-payg')
-          expect(system.instance_data).to eq(instance_data)
+        context 'system not in SCC but in the db' do
+          before do
+            stub_request(:post, scc_register_system_url)
+              .to_return(
+                status: 201,
+                body: scc_register_response.to_s,
+                headers: {}
+              )
+          end
+
+          it 'does not save the data' do
+            allow_any_instance_of(System).to receive(:save!).and_raise(ActiveRecord::RecordInvalid)
+            allow(InstanceVerification::Providers::Example).to receive(:new).at_least(:once).and_return(plugin_double)
+            allow(plugin_double).to receive(:instance_identifier).and_return('i-12345-payg')
+            post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
+            expect(response.message).to eq('Unprocessable Content')
+            expect(response.parsed_body).to eq({ 'type' => 'error', 'error' => 'System could not be created: Record invalid' })
+            expect(response.code).to eq('422')
+          end
+        end
+
+        context 'system in SCC and not in the db' do
+          let(:system) { create(:system, login: 'i-12345-payg') }
+
+          before do
+            stub_request(:post, scc_register_system_url)
+            .to_return(
+              status: 422,
+              body: {
+                type: 'error',
+                error:
+                  'System token This combination of system login, password and token is already taken'
+
+              }.to_json,
+              headers: {}
+            )
+          end
+
+          it 'saves the data' do
+            allow_any_instance_of(described_class).to receive(:create_system).and_return(system)
+            allow(InstanceVerification::Providers::Example).to receive(:new).at_least(:once).and_return(plugin_double)
+            allow(plugin_double).to receive(:instance_identifier).and_return('i-12345-payg')
+            post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
+            expect(response.message).to eq('Created')
+            expect(response.code).to eq('201')
+            expect(response.parsed_body['login']).to eq('i-12345-payg')
+          end
         end
       end
+      # rubocop:enable RSpec/NestedGroups
 
       context 'credentials not found' do
         before do
@@ -214,7 +266,7 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
 
         it 'returns error' do
           post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
-          data = JSON.parse(response.body)
+          data = response.parsed_body
           expect(response.code).to eq('401')
           expect(data['type']).to eq('error')
           expect(data['error']).to include('Invalid credentials')
@@ -233,7 +285,7 @@ describe Api::Connect::V3::Subscriptions::SystemsController, type: :request do
 
         it 'returns error' do
           post '/connect/subscriptions/systems', params: params, headers: { HTTP_AUTHORIZATION: 'Token token=bar' }
-          data = JSON.parse(response.body)
+          data = response.parsed_body
           expect(data['type']).to eq('error')
           expect(data['error']).to include('timed out')
         end

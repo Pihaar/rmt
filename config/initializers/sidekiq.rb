@@ -8,10 +8,10 @@ redis_config = {
   url: Settings.try(:redis).try(:url) || 'redis://127.0.0.1:6380/0',
   connect_timeout: 10,
   reconnect_attempts: 3,
-  namespace: 'rmt_sidekiq'
+  db: 1
 }
 
-# :nocov:
+# simplecov:disable
 Sidekiq.configure_server do |config|
   config.redis = redis_config
 
@@ -19,7 +19,7 @@ Sidekiq.configure_server do |config|
   # This helps when viewing logs via journalctl -u rmt-sidekiq
   config.logger.level = Logger::INFO
 end
-# :nocov:
+# simplecov:enable
 
 Sidekiq.configure_client do |config|
   config.redis = redis_config

@@ -3,18 +3,27 @@ git_source(:github) { |repo_name| "https://github.com/#{repo_name}" }
 source 'https://rubygems.org'
 ruby '~> 3.4'
 
-gem 'rails', '~> 8.1.0'
+# Individual Rails components (instead of meta-gem)
+# This excludes actionmailer/actionmailbox to avoid CVE-2026-42256 (bsc#1265369)
+# as well as other unused Rails dependencies (actioncable, actiontext, activestorage)
+gem 'railties', '~> 8.1.3.1'
+gem 'activesupport', '~> 8.1.3.1'
+gem 'activemodel', '~> 8.1.3.1'
+gem 'activerecord', '~> 8.1.3.1'
+gem 'activejob', '~> 8.1.3.1'
+gem 'actionpack', '~> 8.1.3.1'
+gem 'actionview', '~> 8.1.3.1'
 
 gem 'bootsnap', require: false
 
 gem 'ostruct'
 gem 'csv'
 
-gem 'puma'
-gem 'mysql2'
+gem 'puma', '~> 8'
+gem 'mysql2', '~> 0.5'
 gem 'sqlite3'
 
-gem 'nokogiri'
+gem 'nokogiri', '~> 1'
 gem 'thor'
 
 # Build JSON APIs with ease. Read more: https://github.com/rails/jbuilder
@@ -108,6 +117,7 @@ gem 'ronn-ng'
 
 gem 'repomd_parser'
 
+gem 'benchmark'
+
 # Use Sidekiq for ActiveJob
-gem 'sidekiq'
-gem 'redis-namespace'
+gem 'sidekiq', '>= 7.0'

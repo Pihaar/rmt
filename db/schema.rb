@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_13_000000) do
   create_table "activations", charset: "utf8mb3", collation: "utf8mb3_general_ci", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "service_id", null: false
@@ -96,7 +96,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
   create_table "profiles", charset: "utf8mb4", collation: "utf8mb4_unicode_520_ci", force: :cascade do |t|
     t.string "profile_type", null: false
     t.string "identifier", null: false
-    t.text "data", null: false
+    t.text "data", size: :long, null: false
     t.timestamp "last_synced_at"
     t.datetime "created_at", precision: 6, null: false
     t.datetime "updated_at", precision: 6, null: false
@@ -114,6 +114,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
     t.datetime "last_mirrored_at"
     t.string "local_path", limit: 512, null: false
     t.boolean "mirroring_enabled", default: false, null: false
+    t.string "mirroring_type", limit: 16
     t.string "name", null: false
     t.bigint "scc_id", unsigned: true
     t.index ["external_url"], name: "index_repositories_on_external_url", unique: true
@@ -184,7 +185,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
     t.datetime "last_seen_at"
     t.string "login"
     t.string "password"
-    t.boolean "proxy_byos", default: false
     t.integer "proxy_byos_mode", default: 0
     t.string "pubcloud_reg_code"
     t.datetime "registered_at"
@@ -194,6 +194,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_08_092033) do
     t.string "system_token"
     t.datetime "updated_at", null: false
     t.index ["hostname"], name: "index_systems_on_hostname"
+    t.index ["last_seen_at"], name: "index_systems_on_last_seen_at"
     t.index ["login", "password", "system_token"], name: "index_systems_on_login_and_password_and_system_token", unique: true
     t.index ["login", "password"], name: "index_systems_on_login_and_password"
     t.index ["system_token"], name: "index_systems_on_system_token"

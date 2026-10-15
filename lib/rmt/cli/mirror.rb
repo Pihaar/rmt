@@ -1,12 +1,19 @@
 class RMT::CLI::Mirror < RMT::CLI::Base
   class_option :do_not_raise_unpublished, desc: _('Do not fail the command if product is in alpha or beta stage'), type: :boolean, required: false
 
+  # mirroring shares the rmt-cli lock with sync, which writes the same repositories rows
+  # Both run off timers with a nine hour randomised delay, so they overlap routinely,
+  # wait for the (shorter) sync to finish rather than drop a whole night of mirroring
+  LOCK_TIMEOUT = 1800
+
   desc 'all', _('Mirror all enabled repositories')
   def all
-    RMT::Lockfile.lock('mirror') do
+    RMT::Lockfile.lock(timeout: LOCK_TIMEOUT) do
       downloaded_files_count = 0
       downloaded_files_size = 0
       start_time = Time.current
+      RMT::Config.pin_revalidation!
+      log_mirror_config
 
       begin
         suma_product_tree.mirror
@@ -46,8 +53,10 @@ class RMT::CLI::Mirror < RMT::CLI::Base
 
   desc 'repository IDS', _('Mirror enabled repositories with given repository IDs')
   def repository(*ids)
-    RMT::Lockfile.lock('mirror') do
+    RMT::Lockfile.lock(timeout: LOCK_TIMEOUT) do
       start_time = Time.current
+      RMT::Config.pin_revalidation!
+      log_mirror_config
 
       ids = clean_target_input(ids)
       raise RMT::CLI::Error.new(_('No repository IDs supplied')) if ids.empty?
@@ -72,8 +81,10 @@ class RMT::CLI::Mirror < RMT::CLI::Base
 
   desc 'product IDS', _('Mirror enabled repositories for a product with given product IDs')
   def product(*targets)
-    RMT::Lockfile.lock('mirror') do
+    RMT::Lockfile.lock(timeout: LOCK_TIMEOUT) do
       start_time = Time.current
+      RMT::Config.pin_revalidation!
+      log_mirror_config
 
       targets = clean_target_input(targets)
       raise RMT::CLI::Error.new(_('No product IDs supplied')) if targets.empty?
@@ -110,6 +121,23 @@ class RMT::CLI::Mirror < RMT::CLI::Base
 
   def suma_product_tree
     RMT::Mirror::SumaProductTree.new(logger: logger, mirroring_base_dir: RMT::DEFAULT_MIRROR_DIR)
+  end
+
+  # NOTE: only log non-sensitive config keys here.
+  # Logged at debug level so it doesn't interleave with the user-facing INFO
+  # summary lines (the CLI logger writes INFO+ to stdout).
+  def log_mirror_config
+    logger.debug(
+      format(
+        'Mirror config: download_concurrency=%<dc>s, head_concurrency=%<hc>s, ' \
+          'retry_count=%<rc>s, retry_delay=%<rd>s, exponential_backoff=%<eb>s, ' \
+          'revalidate_repodata=%<rv>s',
+        dc: RMT::Config.download_concurrency, hc: RMT::Config.head_concurrency,
+        rc: RMT::Config.retry_count, rd: RMT::Config.retry_delay,
+        eb: RMT::Config.exponential_backoff?,
+        rv: RMT::Config.revalidate_repodata_pinned?
+      )
+    )
   end
 
   def errors
@@ -153,7 +181,7 @@ class RMT::CLI::Mirror < RMT::CLI::Base
     true
   end
 
-  def mirror_repositories!(repos)
+  def mirror_repositories!(repos) # rubocop:disable Metrics/PerceivedComplexity, Metrics/CyclomaticComplexity
     downloaded_files_count = 0
     downloaded_files_size = 0
 
@@ -176,8 +204,21 @@ class RMT::CLI::Mirror < RMT::CLI::Base
         is_airgapped: false
       }
 
+      mirror_start = Time.current
+      logger.debug("Starting mirror for '%{repo_name}' (ID: %{repo_id})" % { repo_name: repo.name, repo_id: repo.friendly_id })
       files_count, files_size = RMT::Mirror.new(**configuration).mirror_now
       repo.refresh_timestamp!
+      duration = (Time.current - mirror_start).round(1)
+      if files_count && files_count > 0
+        file_word = (files_count == 1) ? 'file' : 'files'
+        logger.info(_("Completed '%{repo_name}' (ID: %{repo_id}) in %{duration}s, %{files_count} %{file_word}") % {
+          repo_name: repo.name, repo_id: repo.friendly_id, duration: duration, files_count: files_count, file_word: file_word
+        })
+      elsif files_count
+        logger.info(_("Completed '%{repo_name}' (ID: %{repo_id}) in %{duration}s, up to date") % {
+          repo_name: repo.name, repo_id: repo.friendly_id, duration: duration
+        })
+      end
 
       downloaded_files_count += files_count if files_count
       downloaded_files_size += files_size if files_size
@@ -192,6 +233,8 @@ class RMT::CLI::Mirror < RMT::CLI::Base
   end
 
   def finish_execution(start_time:, repo_count:, downloaded_files_count:, downloaded_files_size:)
+    RMT::Config.unpin_revalidation!
+
     if errors.empty?
       logger.info("\e[32m" + (_('Total mirrored repositories: %{repo_count}') % { repo_count: repo_count }) + "\e[0m")
       logger.info("\e[32m" + (_('Total transferred files: %{files_count}') % { files_count: downloaded_files_count }) + "\e[0m")

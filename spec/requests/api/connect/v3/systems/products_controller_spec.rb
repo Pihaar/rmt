@@ -42,6 +42,21 @@ RSpec.describe Api::Connect::V3::Systems::ProductsController do
       its(:body) { is_expected.to eq(error_json) }
     end
 
+    context 'when product is Rancher based (No repositories)' do
+      subject(:json_data) { JSON.parse(response.body, symbolize_names: true) }
+
+      let(:product) { create(:product, :product_rancher, :with_service) }
+
+      before do
+        post url, headers: headers, params: payload
+      end
+
+      it 'creates a system and associates it with the rancher product' do
+        expect(response).to have_http_status(:created)
+        expect(json_data[:product][:id]).to eq(product.id)
+      end
+    end
+
     context 'when product has unmet root dependencies' do
       subject { response }
 
@@ -465,6 +480,43 @@ RSpec.describe Api::Connect::V3::Systems::ProductsController do
       it 'deactivates old product and activates new product' do
         expect(system.activations.first.reload.service_id).to equal(new_product.service.id)
       end
+    end
+  end
+
+  describe 'with a race condition' do
+    subject { response }
+
+    let(:request) { put url, headers: headers, params: payload }
+    let(:new_product) { FactoryBot.create(:product, :with_mirrored_repositories) }
+    let(:payload) do
+      {
+        identifier: new_product.identifier,
+        version: new_product.version,
+        arch: new_product.arch
+      }
+    end
+    let(:serialized_json) do
+      V3::ServiceSerializer.new(
+        new_product.service,
+        base_url: URI::HTTP.build({ scheme: response.request.scheme, host: response.request.host }).to_s
+      ).to_json
+    end
+
+    before do
+      allow_any_instance_of(ActiveRecord::Associations::CollectionProxy)
+        .to receive(:where).and_wrap_original do |original_method, *args|
+        # silently update the system record in the background
+        system.update(id: 9999)
+        # continue with the original ActiveRecord call which will now fail
+        # because the foreign key (system_id) no longer points to a valid system.
+        original_method.call(*args)
+      end
+    end
+
+    it 'return an error' do
+      request
+      expect(response.code).to eq('422')
+      expect(response.body).to include('system is not valid')
     end
   end
 
