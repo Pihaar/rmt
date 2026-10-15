@@ -10,6 +10,7 @@ class RMT::Downloader
   MAX_BACKOFF = 300
   MAX_429_RETRIES = 5
   MIN_RATE_LIMIT_DELAY = 30
+  FAST_RETRIES = 2
 
   attr_reader :concurrency, :head_concurrency, :max_retries, :retry_delay,
               :exponential_backoff, :downloaded_files_count, :downloaded_files_size
@@ -171,11 +172,13 @@ class RMT::Downloader
     end
   end
 
-  # flat retry_delay when backoff disabled, otherwise exponential with full jitter, capped at MAX_BACKOFF
+  # First FAST_RETRIES attempts use the flat retry_delay (transient blips); after that,
+  # when exponential_backoff is enabled, switch to exponential backoff with full jitter
+  # (capped at MAX_BACKOFF) to give a throttling server room instead of hammering it.
   def compute_delay(remaining_retries)
-    return @retry_delay unless @exponential_backoff
-
     attempt = @max_retries - remaining_retries
+    return @retry_delay if !@exponential_backoff || attempt < FAST_RETRIES
+
     capped = [@retry_delay * (2**attempt), MAX_BACKOFF].min
     rand(1..capped)
   end

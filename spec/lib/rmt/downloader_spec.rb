@@ -952,15 +952,21 @@ RSpec.describe RMT::Downloader do
                             retry_delay: 2, max_retries: 4, exponential_backoff: true)
       end
 
-      it 'returns a jittered value within 1..(retry_delay * 2^attempt)' do
-        # attempt = max_retries(4) - remaining(2) = 2 -> cap = 2 * 2^2 = 8
+      it 'uses the flat retry_delay for the first FAST_RETRIES attempts' do
+        expect(downloader.send(:compute_delay, 4)).to eq(2)
+      end
+
+      it 'still uses the flat retry_delay on the last fast attempt' do
+        expect(downloader.send(:compute_delay, 3)).to eq(2)
+      end
+
+      it 'switches to jittered backoff once past FAST_RETRIES' do
         expect(downloader.send(:compute_delay, 2)).to be_between(1, 8)
       end
 
       it 'caps the delay at MAX_BACKOFF' do
         capped = described_class.new(logger: RMT::Logger.new('/dev/null'),
                                      retry_delay: 100, max_retries: 4, exponential_backoff: true)
-        # attempt = 4 - 0 = 4 -> 100 * 2^4 = 1600, capped to MAX_BACKOFF (300)
         expect(capped.send(:compute_delay, 0)).to be_between(1, RMT::Downloader::MAX_BACKOFF)
       end
     end
