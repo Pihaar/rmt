@@ -28,6 +28,7 @@ class RMT::Downloader
     @concurrency = concurrency
     @head_concurrency = head_concurrency
     @max_retries = max_retries
+    @run_retries = max_retries
     @retry_delay = retry_delay
     @exponential_backoff = exponential_backoff
     @auth_token = auth_token
@@ -39,10 +40,13 @@ class RMT::Downloader
   end
 
   # returns the list of files that failed to download when 'ignore_errors: true',
-  # otherwise raises RMT::Downloader::Exception if any file fails to download
-  def download_multi(files, ignore_errors: false)
+  # otherwise raises RMT::Downloader::Exception if any file fails to download.
+  # 'retries' overrides the per-file retry budget (metadata downloads pass a higher
+  # value to ride out sporadic timeouts from flaky upstreams).
+  def download_multi(files, ignore_errors: false, retries: @max_retries)
     @rate_limit_retries = {}
     @rate_limited = false
+    @run_retries = retries
 
     downloads_needed, failed_cache =
       try_copying_from_cache(files, ignore_errors: ignore_errors)
@@ -61,7 +65,7 @@ class RMT::Downloader
 
   protected
 
-  def queue_download(file, retries: @max_retries)
+  def queue_download(file, retries: @run_retries)
     make_file_dir(file.local_path)
 
     request_uri = request_uri(file).to_s
@@ -176,7 +180,7 @@ class RMT::Downloader
   # when exponential_backoff is enabled, switch to exponential backoff with full jitter
   # (capped at MAX_BACKOFF) to give a throttling server room instead of hammering it.
   def compute_delay(remaining_retries)
-    attempt = @max_retries - remaining_retries
+    attempt = @run_retries - remaining_retries
     return @retry_delay if !@exponential_backoff || attempt < FAST_RETRIES
 
     capped = [@retry_delay * (2**attempt), MAX_BACKOFF].min
@@ -314,7 +318,7 @@ class RMT::Downloader
 
     return unless invalid_response?(response)
 
-    request.retries ||= @max_retries
+    request.retries ||= @run_retries
     if request.retries > 0
       delay = compute_delay(request.retries)
       @logger.warn(_('Poking %{file_reference} failed with %{message}. Retrying %{retries} more times after %{seconds} seconds') % {

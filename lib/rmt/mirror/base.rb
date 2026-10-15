@@ -44,6 +44,7 @@ class RMT::Mirror::Base
   VALID_CHECKSUM_TYPES = %w[SHA256 SHA512 SHA1 MD5].freeze
   CHECKSUM_HEX_PATTERN = /\A[a-f0-9]+\z/i
   CHECKSUM_LENGTHS = { 'SHA256' => 64, 'SHA512' => 128, 'SHA1' => 40, 'MD5' => 32 }.freeze
+  METADATA_RETRIES = 8 # metadata is a handful of files; retry harder to ride out flaky upstreams
 
   def file_reference(relative, to:)
     RMT::Mirror::FileReference.new(
@@ -57,7 +58,7 @@ class RMT::Mirror::Base
 
   def download_cached!(relative, to:)
     ref = file_reference(relative, to: to)
-    downloader.download_multi([ref])
+    downloader.download_multi([ref], retries: METADATA_RETRIES)
     ref
   end
 
@@ -66,7 +67,7 @@ class RMT::Mirror::Base
   end
 
   def check_signature(key_file:, signature_file:, metadata_file:)
-    downloader.download_multi([signature_file, key_file])
+    downloader.download_multi([signature_file, key_file], retries: METADATA_RETRIES)
 
     gpg_checker = RMT::GPG.new(
       metadata_file: metadata_file.local_path,

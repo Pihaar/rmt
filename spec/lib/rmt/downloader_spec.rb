@@ -969,6 +969,16 @@ RSpec.describe RMT::Downloader do
                                      retry_delay: 100, max_retries: 4, exponential_backoff: true)
         expect(capped.send(:compute_delay, 0)).to be_between(1, RMT::Downloader::MAX_BACKOFF)
       end
+
+      it 'treats the first fast attempt against the run budget as flat (metadata path)' do
+        downloader.instance_variable_set(:@run_retries, 8)
+        expect(downloader.send(:compute_delay, 8)).to eq(2)
+      end
+
+      it 'scales backoff against the raised run budget (metadata path)' do
+        downloader.instance_variable_set(:@run_retries, 8)
+        expect(downloader.send(:compute_delay, 6)).to be_between(1, 16)
+      end
     end
   end
 

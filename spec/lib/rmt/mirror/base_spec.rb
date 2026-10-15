@@ -58,8 +58,8 @@ describe RMT::Mirror::Base do
     let(:resource) { 'somedir/somefile.json' }
     let(:temp) { '/temp/path' }
 
-    it 'downloads the resource' do
-      expect(downloader).to receive(:download_multi)
+    it 'downloads the resource with the metadata retry budget' do
+      expect(downloader).to receive(:download_multi).with(anything, retries: RMT::Mirror::Base::METADATA_RETRIES)
 
       ref = base.download_cached!(resource, to: temp)
 
@@ -166,7 +166,7 @@ describe RMT::Mirror::Base do
 
     context 'has valid signature' do
       it 'succeeds' do
-        expect(downloader).to receive(:download_multi).with(match_array([key_file, signature_file]))
+        expect(downloader).to receive(:download_multi).with(match_array([key_file, signature_file]), retries: RMT::Mirror::Base::METADATA_RETRIES)
         expect_any_instance_of(RMT::GPG).to receive(:verify_signature)
         base.check_signature(key_file: key_file, signature_file: signature_file, metadata_file: metadata)
       end
